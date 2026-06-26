@@ -1,0 +1,12 @@
+# Python 虚拟环境
+venv/
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 输出目录
+outputs/
+
+# VS Code 配置
+.vscode/
