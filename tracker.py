@@ -1,5 +1,7 @@
 import cv2
 import numpy as np
+import os
+
 
 # 读取图片
 img = cv2.imread("images/test.jpg")
@@ -82,16 +84,17 @@ for contour in contours:
     )
 
 # 保存结果
-cv2.imwrite(
+os.makedirs("outputs", exist_ok=True)
+
+ok1 = cv2.imwrite(
     "outputs/mask.jpg",
     mask
 )
 
-cv2.imwrite(
+ok2 = cv2.imwrite(
     "outputs/result.jpg",
     result
 )
 
-print("已保存:")
-print("outputs/mask.jpg")
-print("outputs/result.jpg")
+print("mask 保存成功：", ok1)
+print("result 保存成功：", ok2)
