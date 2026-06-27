@@ -28,17 +28,17 @@ kernel = np.ones((5, 5), np.uint8)
 
 mask = cv2.morphologyEx(
     mask,
-    cv2.MORPH_OPEN,
+    cv2.MORPH_OPEN, #开运算，先缩小小于5x5的白噪点，后膨胀至原大小用以消除噪点
     kernel
 )
 
 mask = cv2.morphologyEx(
     mask,
-    cv2.MORPH_CLOSE,
+    cv2.MORPH_CLOSE, #闭运算，同上原理，先膨胀黑，再缩小，补洞
     kernel
 )
 
-# 查找轮廓
+# 查找轮廓，不要第二个返回值
 contours, _ = cv2.findContours(
     mask,
     cv2.RETR_EXTERNAL,
