@@ -1,0 +1,41 @@
+{
+  "tracker": {
+    "blue_lower_h": 90,
+    "blue_lower_s": 50,
+    "blue_lower_v": 50,
+    "blue_upper_h": 140,
+    "blue_upper_s": 255,
+    "blue_upper_v": 255,
+    "min_area": 50,
+    "morph_kernel_size": 5
+  },
+  "coverage": {
+    "brush_width": 30,
+    "brush_height": 15,
+    "grid_size": 10,
+    "output_dir": "outputs"
+  },
+  "bed_area": {
+    "image_path": "D:\\mite_coverage\\images\\test.jpg",
+    "points": [
+      [
+        245,
+        286
+      ],
+      [
+        1388,
+        318
+      ],
+      [
+        1670,
+        1215
+      ],
+      [
+        4,
+        1247
+      ]
+    ],
+    "width": 1666,
+    "height": 990
+  }
+}
