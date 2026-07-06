@@ -7,34 +7,33 @@ import cv2
 import numpy as np
 import os
 from config import config_manager
+from utils import imshow_adaptive
 
 
 class BedSelector:
     """床铺区域选择器"""
     
-    def __init__(self, image_path: str = None, video_path: str = None):
+    def __init__(self, video_path: str):
         """
         初始化选择器
         
         Args:
-            image_path: 床铺图片路径（可选）
-            video_path: 视频文件路径（可选，用于提取第一帧）
+            video_path: 视频文件路径（用于提取第一帧）
         """
-        self.image_path = image_path
         self.video_path = video_path
         self.image = None
         self.height = 0
         self.width = 0
         self.display = None
         self.points = []  # 存储4个角点
-        self.window_name = "床铺区域选择"
+        self.window_name = "Bed Area Selection"
         self.warped_image = None  # 透视变换后的图像
         
         # 加载图像
         self._load_image()
         
     def _load_image(self):
-        """加载图像（从图片或视频第一帧）"""
+        """加载图像（从视频第一帧）"""
         if self.video_path and os.path.exists(self.video_path):
             # 从视频提取第一帧
             cap = cv2.VideoCapture(self.video_path)
@@ -48,26 +47,29 @@ class BedSelector:
                     raise ValueError(f"无法读取视频帧: {self.video_path}")
             else:
                 raise ValueError(f"无法打开视频: {self.video_path}")
-        
-        if self.image is None and self.image_path and os.path.exists(self.image_path):
-            # 从图片加载
-            self.image = cv2.imread(self.image_path)
-            if self.image is None:
-                raise FileNotFoundError(f"无法读取图片: {self.image_path}")
-            print(f"已加载图片: {self.image_path}")
-        
-        if self.image is None:
-            raise ValueError("请提供有效的图片路径或视频路径")
+        else:
+            raise ValueError("请提供有效的视频路径")
         
         self.height, self.width = self.image.shape[:2]
         self.display = self.image.copy()
         
     def create_window(self):
         """创建窗口并设置鼠标回调"""
+        # 获取屏幕分辨率并自适应缩放窗口，保持比例且不超出屏幕
+        from utils import get_screen_resolution
+        screen_w, screen_h = get_screen_resolution()
+        
+        max_ratio = 0.82
+        max_w = int(screen_w * max_ratio)
+        max_h = int(screen_h * max_ratio)
+        
+        scale = min(max_w / self.width, max_h / self.height)
+        
+        win_w = int(self.width * scale) if scale < 1.0 else self.width
+        win_h = int(self.height * scale) if scale < 1.0 else self.height
+        
         cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(self.window_name, 
-                        min(800, self.width), 
-                        min(600, self.height))
+        cv2.resizeWindow(self.window_name, win_w, win_h)
         cv2.setMouseCallback(self.window_name, self.mouse_callback)
         
     def mouse_callback(self, event, x, y, flags, param):
@@ -113,11 +115,11 @@ class BedSelector:
     def _draw_help_text(self):
         """绘制帮助文字"""
         help_text = [
-            f"已选择: {len(self.points)}/4 个点",
-            "操作:",
-            "R - 重置",
-            "S - 保存并退出",
-            "Q - 退出"
+            f"Selected: {len(self.points)}/4 points",
+            "Controls:",
+            "R - Reset",
+            "S - Save & Exit",
+            "Q - Quit"
         ]
         
         y_offset = 30
@@ -180,21 +182,47 @@ class BedSelector:
         # 执行透视变换获取尺寸
         self.perspective_transform()
         
+        # 立即销毁 OpenCV 窗口，避免在等待控制台输入时发生“窗口未响应”挂起/崩溃
+        cv2.destroyAllWindows()
+        
+        # 询问实际床铺尺寸，默认沿用之前配置
+        prev_bed_config = config_manager.get_bed_area_config()
+        default_width = prev_bed_config.real_width_cm if prev_bed_config.real_width_cm > 0 else 150
+        default_height = prev_bed_config.real_height_cm if prev_bed_config.real_height_cm > 0 else 200
+        
+        print(f"\n床铺区域像素尺寸: {self.warped_image.shape[1]}x{self.warped_image.shape[0]}")
+        print("请输入床铺实际尺寸（厘米，直接回车使用默认值）：")
+        
+        try:
+            real_width = int(input(f"  宽度（当前 {default_width}）: ").strip() or str(default_width))
+            real_height = int(input(f"  高度（当前 {default_height}）: ").strip() or str(default_height))
+        except ValueError:
+            print(f"输入无效，将使用默认值 {default_width}x{default_height}")
+            real_width = default_width
+            real_height = default_height
+        
         # 保存配置
         config_manager.set_bed_area(
-            image_path=os.path.abspath(self.image_path) if self.image_path else "",
             points=self.points,
             width=self.warped_image.shape[1],
-            height=self.warped_image.shape[0]
+            height=self.warped_image.shape[0],
+            real_width_cm=real_width,
+            real_height_cm=real_height,
+            calibration_video_width=self.width,
+            calibration_video_height=self.height
         )
         
         # 保存透视变换后的图像
         warped_path = "bed_area_warped.jpg"
         cv2.imwrite(warped_path, self.warped_image)
         
-        print(f"配置已保存到: {output_path}")
-        print(f"透视变换图像已保存到: {warped_path}")
-        print(f"床铺区域尺寸: {self.warped_image.shape[1]}x{self.warped_image.shape[0]}")
+        print(f"\n配置已保存！")
+        print(f"  像素尺寸: {self.warped_image.shape[1]}x{self.warped_image.shape[0]}")
+        if real_width > 0 and real_height > 0:
+            print(f"  实际尺寸: {real_width}x{real_height} 厘米")
+            print(f"  比例: {real_width/self.warped_image.shape[1]:.3f} 厘米/像素")
+        else:
+            print("  实际尺寸: 未设置（将使用像素计算）")
         
     def run(self):
         """
@@ -215,7 +243,9 @@ class BedSelector:
             cv2.imshow(self.window_name, self.display)
             key = cv2.waitKey(1) & 0xFF
             
-            if key == ord('q') or key == ord('Q'):
+            # 支持 ESC (27), Q/q 键以及右上角 X 按钮关闭窗口退出
+            if key in [27, ord('q'), ord('Q')] or \
+               (cv2.getWindowProperty(self.window_name, cv2.WND_PROP_VISIBLE) < 1):
                 print("退出选择")
                 cv2.destroyAllWindows()
                 return False
@@ -243,9 +273,9 @@ class BedSelector:
             self.perspective_transform()
             
         if self.warped_image is not None:
-            cv2.imshow("透视变换预览", self.warped_image)
+            imshow_adaptive("Perspective Warp Preview", self.warped_image)
             cv2.waitKey(0)
-            cv2.destroyWindow("透视变换预览")
+            cv2.destroyWindow("Perspective Warp Preview")
 
 
 def main():
@@ -269,23 +299,7 @@ def main():
                 print("\n未保存配置")
             return
     
-    # 测试从图片加载
-    image_path = "images/test.jpg"
-    
-    if not os.path.exists(image_path):
-        print(f"测试图片不存在: {image_path}")
-        print("请将床铺图片放在 images/test.jpg 或放入视频到 videos/ 目录")
-        return
-    
-    selector = BedSelector(image_path)
-    success = selector.run()
-    
-    if success:
-        print("\n床铺区域配置完成！")
-        selector.show_preview()
-    else:
-        print("\n未保存配置")
-
+    print("请将测试录像放入 videos/ 目录")
 
 if __name__ == "__main__":
     main()

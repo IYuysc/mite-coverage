@@ -11,17 +11,44 @@ from config import config_manager
 class CoverageCalculator:
     """覆盖率计算器"""
     
-    def __init__(self, bed_width: int, bed_height: int):
+    def __init__(self, bed_width: int, bed_height: int,
+                 real_width_cm: int = 0, real_height_cm: int = 0):
         """
         初始化计算器
         
         Args:
             bed_width: 床铺区域宽度（像素）
             bed_height: 床铺区域高度（像素）
+            real_width_cm: 实际宽度（厘米），0表示未设置
+            real_height_cm: 实际高度（厘米），0表示未设置
         """
         self.bed_width = bed_width
         self.bed_height = bed_height
+        self.real_width_cm = real_width_cm
+        self.real_height_cm = real_height_cm
         self.config = config_manager.get_coverage_config()
+        
+        # 计算像素到厘米的比例
+        if real_width_cm > 0 and real_height_cm > 0:
+            self.pixel_to_cm_x = real_width_cm / bed_width  # cm per pixel
+            self.pixel_to_cm_y = real_height_cm / bed_height # cm per pixel
+            self.use_real_unit = True
+        else:
+            self.pixel_to_cm_x = 1.0
+            self.pixel_to_cm_y = 1.0
+            self.use_real_unit = False
+        
+        # 计算像素级主刷口大小
+        if self.use_real_unit and getattr(self.config, 'real_brush_width_cm', 0) > 0 and getattr(self.config, 'real_brush_height_cm', 0) > 0:
+            # 像素 = 厘米 / (厘米/像素)
+            self.brush_width_px = int(round(self.config.real_brush_width_cm / self.pixel_to_cm_x))
+            self.brush_height_px = int(round(self.config.real_brush_height_cm / self.pixel_to_cm_y))
+        else:
+            self.brush_width_px = self.config.brush_width
+            self.brush_height_px = self.config.brush_height
+            
+        self.brush_width_px = max(1, self.brush_width_px)
+        self.brush_height_px = max(1, self.brush_height_px)
         
         # 网格化参数
         self.grid_size = self.config.grid_size
@@ -40,6 +67,15 @@ class CoverageCalculator:
         # 轨迹点
         self.trajectory_points: List[Tuple[int, int]] = []
         
+        # 用于运动方向估算的变量
+        self.smooth_dx = 0.0
+        self.smooth_dy = 0.0
+        self.current_angle = 0.0  # 默认水平朝向
+        self.direction_alpha = 0.2  # 运动向量平滑指数
+        self.min_move_threshold = 2.0  # 触发方向更新的最小位移（像素）
+        
+        self.last_box = None  # 用于帧间插值，防止倍速播放产生断点
+        
     def _point_to_grid(self, x: int, y: int) -> Tuple[int, int]:
         """
         将像素坐标转换为网格坐标
@@ -55,82 +91,152 @@ class CoverageCalculator:
         grid_row = min(y // self.grid_size, self.grid_rows - 1)
         return (grid_col, grid_row)
     
-    def _get_brush_mask(self, center_x: int, center_y: int) -> np.ndarray:
+    def _get_brush_mask(self, center_x: int, center_y: int, angle: float = 0.0) -> np.ndarray:
         """
-        获取主刷口掩码（矩形）
+        获取主刷口掩码（旋转的矩形）
         
         Args:
             center_x: 中心x坐标
             center_y: 中心y坐标
+            angle: 旋转角度（角度制）
             
         Returns:
             二值掩码，形状为 (bed_height, bed_width)
         """
         mask = np.zeros((self.bed_height, self.bed_width), dtype=np.uint8)
         
-        # 绘制矩形主刷口
-        half_w = self.config.brush_width // 2
-        half_h = self.config.brush_height // 2
+        # 旋转矩形参数: ((cx, cy), (width, height), angle)
+        rect = ((float(center_x), float(center_y)), 
+                (float(self.brush_width_px), float(self.brush_height_px)), 
+                float(angle))
         
-        top_left = (center_x - half_w, center_y - half_h)
-        bottom_right = (center_x + half_w, center_y + half_h)
+        # 获取矩形四个角点并转为整数
+        box = cv2.boxPoints(rect)
+        box = np.int32(box)
         
-        cv2.rectangle(mask, top_left, bottom_right, 255, -1)
+        # 填充多边形
+        cv2.fillPoly(mask, [box], 255)
         
         return mask
     
-    def add_point(self, x: int, y: int):
+    def add_point(self, x: int, y: int, angle: Optional[float] = None):
         """
         添加轨迹点并更新覆盖
         
         Args:
             x: x坐标
             y: y坐标
+            angle: 如果提供，则使用此角度而不是根据轨迹自动估算
         """
         # 边界检查
         x = max(0, min(x, self.bed_width - 1))
         y = max(0, min(y, self.bed_height - 1))
         
-        self.trajectory_points.append((x, y))
-        
-        # 获取主刷口掩码
-        brush_mask = self._get_brush_mask(x, y)
-        
-        # 更新热力图
-        self.heatmap += brush_mask.astype(np.float32) * 0.1
-        
-        # 更新网格覆盖
-        # 找到主刷口覆盖的网格范围（矩形）
-        half_w = self.config.brush_width // 2
-        half_h = self.config.brush_height // 2
-        
-        min_x = max(0, (x - half_w) // self.grid_size)
-        max_x = min(self.grid_cols - 1, (x + half_w) // self.grid_size)
-        min_y = max(0, (y - half_h) // self.grid_size)
-        max_y = min(self.grid_rows - 1, (y + half_h) // self.grid_size)
-        
-        # 标记覆盖的网格
-        for row in range(min_y, max_y + 1):
-            for col in range(min_x, max_x + 1):
-                # 计算网格中心
-                grid_center_x = col * self.grid_size + self.grid_size // 2
-                grid_center_y = row * self.grid_size + self.grid_size // 2
+        # 估算旋转角度
+        if angle is not None:
+            final_angle = angle
+            self.current_angle = angle
+        else:
+            final_angle = self.current_angle
+            if self.trajectory_points:
+                prev_x, prev_y = self.trajectory_points[-1]
+                raw_dx = x - prev_x
+                raw_dy = y - prev_y
                 
-                # 检查是否在主刷口矩形范围内
-                if (abs(grid_center_x - x) <= half_w and
-                    abs(grid_center_y - y) <= half_h):
-                    self.coverage_grid[row, col] += 1
-                    self.coverage_mask[row, col] = 1
+                # 使用指数移动平均平滑运动向量
+                self.smooth_dx = self.direction_alpha * raw_dx + (1.0 - self.direction_alpha) * self.smooth_dx
+                self.smooth_dy = self.direction_alpha * raw_dy + (1.0 - self.direction_alpha) * self.smooth_dy
+                
+                # 只有当平滑位移大于阈值时，才更新方向，避免微小抖动引起角度乱转
+                disp = np.sqrt(self.smooth_dx**2 + self.smooth_dy**2)
+                if disp > self.min_move_threshold:
+                    # 运动方向角 (弧度 -> 角度)
+                    angle_motion = np.degrees(np.arctan2(self.smooth_dy, self.smooth_dx))
+                    # 主刷口朝向与运动方向垂直，所以矩形需要旋转 angle_motion - 90
+                    final_angle = angle_motion - 90
+                    self.current_angle = final_angle
+        
+        # 旋转矩形参数: ((cx, cy), (width, height), angle)
+        rect = ((float(x), float(y)), 
+                (float(self.brush_width_px), float(self.brush_height_px)), 
+                float(final_angle))
+        box = cv2.boxPoints(rect)
+        
+        # 倍速播放帧间插值：计算当前 box 与上一个 box 的凸包来填充扫过的整片区域
+        if self.last_box is not None and len(self.trajectory_points) > 0:
+            prev_x, prev_y = self.trajectory_points[-1]
+            dist = np.hypot(x - prev_x, y - prev_y)
+            if dist < 200:  # 如果距离在合理范围内（不超过 ~30cm），则插值
+                hull = cv2.convexHull(np.vstack((self.last_box, box)))
+                draw_poly = np.squeeze(hull)
+            else:
+                draw_poly = box
+        else:
+            draw_poly = box
+            
+        self.trajectory_points.append((x, y))
+        self.last_box = box
+        
+        # 1. 优化热力图更新（只在包围盒范围内更新，避免全图大数组拷贝和加法）
+        xs = draw_poly[:, 0]
+        ys = draw_poly[:, 1]
+        min_x = max(0, int(np.floor(np.min(xs))))
+        max_x = min(self.bed_width - 1, int(np.ceil(np.max(xs))))
+        min_y = max(0, int(np.floor(np.min(ys))))
+        max_y = min(self.bed_height - 1, int(np.ceil(np.max(ys))))
+        
+        if max_x >= min_x and max_y >= min_y:
+            h_sub = max_y - min_y + 1
+            w_sub = max_x - min_x + 1
+            sub_mask = np.zeros((h_sub, w_sub), dtype=np.uint8)
+            # 将角点平移到子区域的局部坐标系下
+            shifted_poly = draw_poly - [min_x, min_y]
+            cv2.fillPoly(sub_mask, [np.int32(shifted_poly)], 255)
+            # 在原热力图的对应区域进行加法（0.1 * 255.0 = 25.5 对应原来数值）
+            self.heatmap[min_y:max_y+1, min_x:max_x+1] += sub_mask.astype(np.float32) * 0.1
+            
+        # 2. 优化覆盖网格更新（使用 NumPy + cv2.fillPoly 向量化操作提升数百倍速度）
+        grid_min_x = max(0, int(np.floor(np.min(xs))) // self.grid_size)
+        grid_max_x = min(self.grid_cols - 1, int(np.ceil(np.max(xs))) // self.grid_size)
+        grid_min_y = max(0, int(np.floor(np.min(ys))) // self.grid_size)
+        grid_max_y = min(self.grid_rows - 1, int(np.ceil(np.max(ys))) // self.grid_size)
+        
+        if grid_max_x >= grid_min_x and grid_max_y >= grid_min_y:
+            # 创建与局部网格对应的二值掩码
+            grid_h = grid_max_y - grid_min_y + 1
+            grid_w = grid_max_x - grid_min_x + 1
+            sub_grid_mask = np.zeros((grid_h, grid_w), dtype=np.uint8)
+            
+            # 将多边形顶点映射到网格坐标系
+            scaled_poly = draw_poly.copy().astype(np.float32)
+            scaled_poly[:, 0] = (scaled_poly[:, 0] - grid_min_x * self.grid_size) / self.grid_size
+            scaled_poly[:, 1] = (scaled_poly[:, 1] - grid_min_y * self.grid_size) / self.grid_size
+            
+            # 由于 OpenCV 的 fillPoly 要求整数点，网格坐标系下数值较小，我们可以用 sub-pixel 级别绘制来保持精度
+            # 乘以位移因子 (shift=4 即 16 倍精度)
+            shift = 4
+            multiplier = 1 << shift
+            scaled_poly_int = np.int32(np.round(scaled_poly * multiplier))
+            
+            cv2.fillPoly(sub_grid_mask, [scaled_poly_int], 1, shift=shift)
+            
+            # 用 numpy 切片直接进行批量覆盖更新
+            self.coverage_grid[grid_min_y:grid_max_y+1, grid_min_x:grid_max_x+1] += sub_grid_mask
+            self.coverage_mask[grid_min_y:grid_max_y+1, grid_min_x:grid_max_x+1] |= sub_grid_mask
+
     
-    def add_trajectory(self, points: List[Tuple[int, int]]):
+    def add_trajectory(self, points: List[Tuple]):
         """
         批量添加轨迹点
         
         Args:
-            points: 轨迹点列表 [(x1,y1), (x2,y2), ...]
+            points: 轨迹点列表 [(x1,y1), (x1,y1,angle), ...]
         """
-        for x, y in points:
-            self.add_point(x, y)
+        for pt in points:
+            if len(pt) >= 3 and pt[2] is not None:
+                self.add_point(pt[0], pt[1], float(pt[2]))
+            else:
+                self.add_point(pt[0], pt[1])
     
     def calculate_coverage_rate(self) -> float:
         """
@@ -236,16 +342,27 @@ class CoverageCalculator:
             avg_coverage = 0
             max_coverage = 0
         
+        # 计算实际覆盖面积
+        if self.use_real_unit:
+            total_area_cm2 = self.real_width_cm * self.real_height_cm
+            covered_area_cm2 = total_area_cm2 * coverage_rate / 100
+            area_info = f"{covered_area_cm2:.0f} cm2 ({covered_area_cm2/10000:.2f} m2)"
+        else:
+            area_info = "未设置实际尺寸"
+        
         return {
             'bed_size': f"{self.bed_width}x{self.bed_height}",
+            'real_bed_size': f"{self.real_width_cm}x{self.real_height_cm} cm" if self.use_real_unit else "未设置",
+            'real_remover_size': f"{self.config.real_remover_width_cm}x{self.config.real_remover_height_cm} cm" if self.use_real_unit else "未设置",
             'grid_size': self.grid_size,
             'grid_count': f"{self.grid_rows}x{self.grid_cols} ({total_cells})",
             'covered_cells': int(covered_cells),
             'coverage_rate': f"{coverage_rate:.2f}%",
+            'covered_area': area_info,
             'trajectory_points': len(self.trajectory_points),
             'avg_coverage_per_cell': f"{avg_coverage:.1f}",
             'max_coverage_per_cell': int(max_coverage),
-            'brush_size': f"{self.config.brush_width}x{self.config.brush_height}"
+            'brush_size': f"{self.brush_width_px}x{self.brush_height_px} px ({self.config.real_brush_width_cm}x{self.config.real_brush_height_cm} cm)" if self.use_real_unit else f"{self.brush_width_px}x{self.brush_height_px} px"
         }
     
     def get_trajectory_array(self) -> np.ndarray:
