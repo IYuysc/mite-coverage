@@ -11,50 +11,10 @@ from typing import List, Tuple, Optional
 from utils import imshow_adaptive
 
 
-class SimpleKalmanFilter:
-    """简单的二维卡尔曼滤波器，用于平滑轨迹预测并处理短暂遮挡"""
-    def __init__(self, max_lost_frames=15):
-        self.kf = cv2.KalmanFilter(4, 2)
-        self.kf.measurementMatrix = np.array([[1, 0, 0, 0],
-                                              [0, 1, 0, 0]], np.float32)
-        self.kf.transitionMatrix = np.array([[1, 0, 1, 0],
-                                             [0, 1, 0, 1],
-                                             [0, 0, 1, 0],
-                                             [0, 0, 0, 1]], np.float32)
-        self.kf.processNoiseCov = np.eye(4, dtype=np.float32) * 1e-2
-        self.kf.measurementNoiseCov = np.eye(2, dtype=np.float32) * 1e-2
-        self.kf.errorCovPost = np.eye(4, dtype=np.float32)
-        self.initialized = False
-        self.lost_frames = 0
-        self.max_lost_frames = max_lost_frames
-
-    def update(self, center):
-        if center is None:
-            self.lost_frames += 1
-            if not self.initialized or self.lost_frames > self.max_lost_frames:
-                self.initialized = False
-                return None
-            # 仅预测
-            prediction = self.kf.predict()
-            return (int(prediction[0]), int(prediction[1]))
-        else:
-            self.lost_frames = 0
-            if not self.initialized:
-                self.kf.statePre = np.array([[center[0]], [center[1]], [0], [0]], np.float32)
-                self.kf.statePost = np.array([[center[0]], [center[1]], [0], [0]], np.float32)
-                self.initialized = True
-                return center
-            # 预测并校准
-            prediction = self.kf.predict()
-            measurement = np.array([[np.float32(center[0])], [np.float32(center[1])]])
-            estimated = self.kf.correct(measurement)
-            return (int(estimated[0]), int(estimated[1]))
-
-
 class TrajectoryPoint:
     """轨迹点"""
     
-    def __init__(self, x: int, y: int, timestamp: float, frame_idx: int, bed_x: int = None, bed_y: int = None, bed_angle: float = None, tail_x: int = None, tail_y: int = None):
+    def __init__(self, x: int, y: int, timestamp: float, frame_idx: int, bed_x: int = None, bed_y: int = None, bed_angle: float = None):
         self.x = x
         self.y = y
         self.timestamp = timestamp  # 时间戳（秒）
@@ -62,8 +22,6 @@ class TrajectoryPoint:
         self.bed_x = bed_x
         self.bed_y = bed_y
         self.bed_angle = bed_angle
-        self.tail_x = tail_x if tail_x is not None else x
-        self.tail_y = tail_y if tail_y is not None else y
 
 
 class BlueTracker:
@@ -103,10 +61,6 @@ class BlueTracker:
         self.bed_config = config_manager.get_bed_area_config()
         self.coverage_config = config_manager.get_coverage_config()
         
-        # 卡尔曼滤波器
-        self.blue_kf = SimpleKalmanFilter(max_lost_frames=15)
-        self.green_kf = SimpleKalmanFilter(max_lost_frames=15)
-        
 
         # 预先计算透视变换矩阵与逆矩阵
         self.has_bed_config = False
@@ -128,13 +82,10 @@ class BlueTracker:
             self.pixel_to_cm_x = real_w / self.bed_config.width
             self.pixel_to_cm_y = real_h / self.bed_config.height
             
-            brush_w_cm = self.coverage_config.real_brush_width_cm or 13.0
-            brush_h_cm = self.coverage_config.real_brush_height_cm or 2.5
-            # 强制左右跨度为较大值，前后跨度为较小值，防止配置写反
-            actual_w = max(brush_w_cm, brush_h_cm)
-            actual_h = min(brush_w_cm, brush_h_cm)
-            self.brush_width_px = max(1, int(round(actual_w / self.pixel_to_cm_x)))
-            self.brush_height_px = max(1, int(round(actual_h / self.pixel_to_cm_y)))
+            brush_w_cm = self.coverage_config.real_brush_width_cm or 15.0
+            brush_h_cm = self.coverage_config.real_brush_height_cm or 2.0
+            self.brush_width_px = max(1, int(round(brush_w_cm / self.pixel_to_cm_x)))
+            self.brush_height_px = max(1, int(round(brush_h_cm / self.pixel_to_cm_y)))
             
             remover_w_cm = self.coverage_config.real_remover_width_cm or 25.0
             remover_h_cm = self.coverage_config.real_remover_height_cm or 22.0
@@ -263,54 +214,6 @@ class BlueTracker:
             blue_center = self._find_marker_center(blue_mask)
             green_center = self._find_marker_center(green_mask)
             
-            # 距离约束：蓝色和绿色标定纸的距离不能超过机身的大小
-            if blue_center and green_center and self.has_bed_config:
-                pt_v_b = np.array([[[blue_center[0], blue_center[1]]]], dtype=np.float32)
-                pt_v_g = np.array([[[green_center[0], green_center[1]]]], dtype=np.float32)
-                pt_b_b = cv2.perspectiveTransform(pt_v_b, self.matrix)[0][0]
-                pt_b_g = cv2.perspectiveTransform(pt_v_g, self.matrix)[0][0]
-                dist_x_cm = (pt_b_g[0] - pt_b_b[0]) * self.pixel_to_cm_x
-                dist_y_cm = (pt_b_g[1] - pt_b_b[1]) * self.pixel_to_cm_y
-                dist_cm = np.hypot(dist_x_cm, dist_y_cm)
-                
-                max_size_cm = max(self.coverage_config.real_remover_width_cm or 25.0, 
-                                  self.coverage_config.real_remover_height_cm or 22.0)
-                
-                if dist_cm > max_size_cm * 1.5:  # 允许一定的误差裕度(1.5倍)
-                    blue_center = None
-                    green_center = None
-            
-            # === EMA平滑处理，消除像素级抖动 ===
-            # 根据播放倍速动态调整 alpha，防止倍速跳帧时标定点产生严重拖尾延迟
-            base_alpha = 0.15  # 降低基础平滑系数，增强抗抖动能力，让红线变得丝滑
-            alpha = 1.0 - (1.0 - base_alpha) ** play_speed
-
-            if blue_center:
-                if getattr(self, 'smoothed_blue', None) is None:
-                    self.smoothed_blue = np.array(blue_center, dtype=float)
-                else:
-                    dist = np.hypot(blue_center[0] - self.smoothed_blue[0], blue_center[1] - self.smoothed_blue[1])
-                    if dist > 150 * play_speed:  # 放宽跳跃判定距离，防止倍速时误判为跳变从而绕过平滑
-                        self.smoothed_blue = np.array(blue_center, dtype=float)
-                    else:
-                        self.smoothed_blue = self.smoothed_blue * (1 - alpha) + np.array(blue_center, dtype=float) * alpha
-                blue_center = (int(round(self.smoothed_blue[0])), int(round(self.smoothed_blue[1])))
-            else:
-                self.smoothed_blue = None
-                
-            if green_center:
-                if getattr(self, 'smoothed_green', None) is None:
-                    self.smoothed_green = np.array(green_center, dtype=float)
-                else:
-                    dist = np.hypot(green_center[0] - self.smoothed_green[0], green_center[1] - self.smoothed_green[1])
-                    if dist > 150 * play_speed:
-                        self.smoothed_green = np.array(green_center, dtype=float)
-                    else:
-                        self.smoothed_green = self.smoothed_green * (1 - alpha) + np.array(green_center, dtype=float) * alpha
-                green_center = (int(round(self.smoothed_green[0])), int(round(self.smoothed_green[1])))
-            else:
-                self.smoothed_green = None
-            
             # 2. 获取坐标
             bx_v, by_v = None, None
             gx_v, gy_v = None, None
@@ -337,22 +240,23 @@ class BlueTracker:
                 # 机身几何中心位于蓝绿中点
                 remover_center = (int(bx_v + 0.5 * dx), int(by_v + 0.5 * dy))
                 
-                # 根据用户要求：蓝色区域（刷头）在黄线正下方，不要往前延伸
-                offset_cm = 0.0
-                
+                # 比例计算：使用除螨仪物理高/宽之比将刷头前伸
+                rem_w = self.coverage_config.real_remover_width_cm or 25.0
+                rem_h = self.coverage_config.real_remover_height_cm or 22.0
+                ratio = (rem_h * 0.5) / rem_w
                 D = np.hypot(dx, dy)
-                rem_h = self.coverage_config.real_remover_height_cm or 27.0
+                offset = ratio * D
                 
-                brush_center = remover_center  # 由于没有前伸量，刷头中心直接等于机身中心
-                # (不再在这里使用视频空间粗略计算尾部，而是放到后面的物理坐标系中精准计算)
-                tail_center = remover_center  # 占位，后面会覆盖
+                rad = np.radians(heading_angle)
+                brush_center = (int(remover_center[0] + offset * np.cos(rad)), 
+                                int(remover_center[1] + offset * np.sin(rad)))
+                    
                 last_heading_angle = heading_angle
                 
             elif gx_v is not None:
                 # 只有绿点被初始化过（单标定纸兜底）：朝向依靠运动轨迹向量
                 brush_center = (int(gx_v), int(gy_v))
                 remover_center = brush_center
-                tail_center = brush_center
                 
                 # 计算运动位移朝向
                 if self.trajectory:
@@ -369,7 +273,6 @@ class BlueTracker:
                 # 只有蓝点被初始化过（单标定纸兜底）：朝向依靠运动轨迹向量
                 brush_center = (int(bx_v), int(by_v))
                 remover_center = brush_center
-                tail_center = brush_center
                 
                 # 计算运动位移朝向
                 if self.trajectory:
@@ -392,7 +295,7 @@ class BlueTracker:
                     # 1. 初始化变量，优先使用床面物理坐标系下的计算以彻底消除透视畸变偏差
                     rx, ry = None, None
                     
-                    parallax_h_cm = getattr(self.config, 'parallax_height_cm', 12.0)
+                    parallax_h_cm = getattr(self.config, 'parallax_height_cm', 0.0)
                     
                     if blue_center and green_center:
                         # 将视频坐标系下的左右标记点投影到床面坐标系下
@@ -405,24 +308,16 @@ class BlueTracker:
                         bx_b, by_b = pt_bed_blue[0], pt_bed_blue[1]
                         gx_b, gy_b = pt_bed_green[0], pt_bed_green[1]
                         
-                        parallax_h_cm = self.config.parallax_height_cm
+                        # 视差高度补偿
                         if parallax_h_cm > 0:
-                            # 径向视差高度补偿：根据用户测量的标定纸真实高度 (3cm)
-                            # 将投影点向摄像机所在的绝对位置进行“径向收缩”
-                            cam_z = 120.0  # 假定摄像机高度 120cm
-                            cam_x_b = self.bed_config.width / 2.0
-                            cam_y_b = self.bed_config.height + (50.0 / self.pixel_to_cm_y)
+                            y_b = by_b * self.pixel_to_cm_y
+                            shift_b = parallax_h_cm * (1.0 - y_b / (self.bed_config.real_height_cm or 150))
+                            by_b += shift_b / self.pixel_to_cm_y
                             
-                            shrink_factor = parallax_h_cm / cam_z
+                            y_g = gy_b * self.pixel_to_cm_y
+                            shift_g = parallax_h_cm * (1.0 - y_g / (self.bed_config.real_height_cm or 150))
+                            gy_b += shift_g / self.pixel_to_cm_y
                             
-                            bx_b = pt_bed_blue[0] + (cam_x_b - pt_bed_blue[0]) * shrink_factor
-                            by_b = pt_bed_blue[1] + (cam_y_b - pt_bed_blue[1]) * shrink_factor
-                            gx_b = pt_bed_green[0] + (cam_x_b - pt_bed_green[0]) * shrink_factor
-                            gy_b = pt_bed_green[1] + (cam_y_b - pt_bed_green[1]) * shrink_factor
-                        else:
-                            bx_b, by_b = pt_bed_blue[0], pt_bed_blue[1]
-                            gx_b, gy_b = pt_bed_green[0], pt_bed_green[1]
-                        
                         dx_bed = gx_b - bx_b
                         dy_bed = gy_b - by_b
                         D_bed = np.hypot(dx_bed, dy_bed)
@@ -432,30 +327,19 @@ class BlueTracker:
                             ux = -dy_bed / D_bed
                             uy = dx_bed / D_bed
                             
-                            # 记录当前动态的主刷口宽度为两点之间的真实像素距离，并按用户要求加宽一些（例如扩大 1.3 倍）
-                            self.last_dynamic_width_px = float(D_bed) * 1.3
-                            
-                            # 物理前伸量：根据用户要求，蓝色区域要在标定点前方一些
-                            # （视差补偿已修正了透视，这里的前伸量是真实的物理距离）
-                            offset_cm = 3.0
+                            # 物理尺寸比例与刷头前提偏移量
+                            rem_w = self.coverage_config.real_remover_width_cm or 25.0
+                            rem_h = self.coverage_config.real_remover_height_cm or 22.0
+                            ratio = (rem_h * 0.5) / rem_w
+                            offset_bed = ratio * D_bed
                             
                             # 机身中心 (直接由两点中点确定)
                             rx = 0.5 * (bx_b + gx_b)
                             ry = 0.5 * (by_b + gy_b)
                             
-                            # 刷头中心 (机身中心沿前行朝向推 offset_cm 对应的像素)
-                            bx = rx + (offset_cm / self.pixel_to_cm_x) * ux
-                            by = ry + (offset_cm / self.pixel_to_cm_y) * uy
-                            
-                            # 尾部红点 (沿相反方向推，也要往前一点，所以缩短距离到机身长度的30%)
-                            tail_cm = (self.coverage_config.real_remover_height_cm or 27.0) * 0.3
-                            tx = rx - (tail_cm / self.pixel_to_cm_x) * ux
-                            ty = ry - (tail_cm / self.pixel_to_cm_y) * uy
-                            
-                            # 将精准计算的物理尾部坐标，反向投影回视频空间，用来画红点
-                            pt_bed_tail = np.array([[[tx, ty]]], dtype=np.float32)
-                            pt_video_tail = cv2.perspectiveTransform(pt_bed_tail, self.inv_matrix)[0][0]
-                            tail_center = (int(pt_video_tail[0]), int(pt_video_tail[1]))
+                            # 刷头中心 (机身中心沿前行朝向推 offset_bed 像素)
+                            bx = rx + offset_bed * ux
+                            by = ry + offset_bed * uy
                             
                             # 床面上的连线角度与主刷口摆放角度
                             vector_angle_bed = np.degrees(np.arctan2(dy_bed, dx_bed))
@@ -495,9 +379,7 @@ class BlueTracker:
                         realtime_calc.add_point(bx, by, float(box_angle))
                     
                     # 4. 在床面掩码上绘制主刷口清洁区域
-                    # 蓝框的长度（左右跨度）根据两点之间的实时距离动态调整，若无则使用配置默认值
-                    dynamic_w = getattr(self, 'last_dynamic_width_px', float(self.brush_width_px))
-                    rect_brush = ((float(bx), float(by)), (dynamic_w, float(self.brush_height_px)), float(box_angle))
+                    rect_brush = ((float(bx), float(by)), (float(self.brush_width_px), float(self.brush_height_px)), float(box_angle))
                     box_brush = cv2.boxPoints(rect_brush)
                     
                     if self.last_box_brush is not None and self.trajectory:
@@ -518,8 +400,7 @@ class BlueTracker:
                 point = TrajectoryPoint(
                     x=brush_center[0], y=brush_center[1],
                     timestamp=timestamp, frame_idx=frame_idx,
-                    bed_x=bx, bed_y=by, bed_angle=box_angle,
-                    tail_x=tail_center[0], tail_y=tail_center[1]
+                    bed_x=bx, bed_y=by, bed_angle=box_angle
                 )
                 self.trajectory.append(point)
             else:
@@ -531,24 +412,16 @@ class BlueTracker:
             if self.has_bed_config and np.any(self.bed_mask > 0):
                 warped_back = cv2.warpPerspective(self.bed_mask, self.inv_matrix, (self.width, self.height))
                 overlay = frame.copy()
-                # 区分颜色：轨迹为较浅的半透明淡蓝色
                 overlay[warped_back > 0] = [235, 206, 135]  # 淡蓝色 BGR [235, 206, 135]
                 cv2.addWeighted(overlay, 0.35, frame, 0.65, 0, dst=frame)
             
             # 绘制标定点
             if blue_center:
-                cv2.circle(frame, blue_center, 3, (255, 0, 0), -1)  # 蓝色圆点缩小为3
+                cv2.circle(frame, blue_center, 5, (255, 0, 0), -1)  # 蓝色圆点
             if green_center:
-                cv2.circle(frame, green_center, 3, (0, 255, 0), -1)  # 绿色圆点缩小为3
-            # 用户要求取消黄线
-            # if blue_center and green_center:
-            #     cv2.line(frame, blue_center, green_center, (0, 255, 255), 2)  # 黄线连接两点
-
-            # 绘制机身走过的轨迹（红线），使用tail_x和tail_y，颜色淡一点
-            if len(self.trajectory) > 1:
-                pts = np.array([[p.tail_x, p.tail_y] for p in self.trajectory], np.int32)
-                pts = pts.reshape((-1, 1, 2))
-                cv2.polylines(frame, [pts], isClosed=False, color=(150, 150, 255), thickness=2)
+                cv2.circle(frame, green_center, 5, (0, 255, 0), -1)  # 绿色圆点
+            if blue_center and green_center:
+                cv2.line(frame, blue_center, green_center, (0, 255, 255), 2)  # 黄线连接两点
 
             # 显示常规信息
             cv2.putText(frame, f"Frame: {frame_idx}/{self.total_frames}",
@@ -603,15 +476,11 @@ class BlueTracker:
                     play_speed = 16
                     print("\n切换至 16x 播放速度")
                 
-                # 键盘按 Q 或 ESC，提前结束追踪并生成报告
-                if key in [27, ord('q'), ord('Q')]:
-                    print("\n用户主动结束追踪，准备生成报告...")
+                # 支持 ESC (27), Q/q 以及点击右上角 X 关闭窗口
+                if key in [27, ord('q'), ord('Q')] or \
+                   (cv2.getWindowProperty("Tracking", cv2.WND_PROP_VISIBLE) < 1):
+                    print("\n用户主动关闭或中断追踪")
                     break
-                # 如果用户直接点击右上角 X 关闭窗口，则直接退出整个程序
-                elif cv2.getWindowProperty("Tracking", cv2.WND_PROP_VISIBLE) < 1:
-                    print("\n用户关闭了追踪窗口，直接退出程序。")
-                    import sys
-                    sys.exit(0)
             
             frame_idx += 1
         

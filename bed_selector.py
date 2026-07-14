@@ -191,10 +191,15 @@ class BedSelector:
         default_height = prev_bed_config.real_height_cm if prev_bed_config.real_height_cm > 0 else 200
         
         print(f"\n床铺区域像素尺寸: {self.warped_image.shape[1]}x{self.warped_image.shape[0]}")
-        print(f"使用默认床铺实际尺寸: {default_width}x{default_height} cm (如需修改请前往配置菜单)")
+        print("请输入床铺实际尺寸（厘米，直接回车使用默认值）：")
         
-        real_width = default_width
-        real_height = default_height
+        try:
+            real_width = int(input(f"  宽度（当前 {default_width}）: ").strip() or str(default_width))
+            real_height = int(input(f"  高度（当前 {default_height}）: ").strip() or str(default_height))
+        except ValueError:
+            print(f"输入无效，将使用默认值 {default_width}x{default_height}")
+            real_width = default_width
+            real_height = default_height
         
         # 保存配置
         config_manager.set_bed_area(

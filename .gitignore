@@ -32,9 +32,3 @@ config.json
 .DS_Store
 Thumbs.db
 *.csv
-
-# 临时文件与日志
-*.diff
-*.patch
-*.log
-.idea/

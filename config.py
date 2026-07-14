@@ -11,15 +11,15 @@ from typing import Tuple, Optional
 @dataclass
 class TrackerConfig:
     """追踪器配置"""
-    blue_lower_h: int = 105
-    blue_lower_s: int = 130
-    blue_lower_v: int = 30
+    blue_lower_h: int = 100
+    blue_lower_s: int = 90
+    blue_lower_v: int = 50
     blue_upper_h: int = 130
     blue_upper_s: int = 255
-    blue_upper_v: int = 255
+    blue_upper_v: int = 250
     
-    green_lower_h: int = 55
-    green_lower_s: int = 120
+    green_lower_h: int = 50
+    green_lower_s: int = 100
     green_lower_v: int = 80
     green_upper_h: int = 85
     green_upper_s: int = 255
@@ -27,8 +27,8 @@ class TrackerConfig:
     
     min_area: int = 50
     morph_kernel_size: int = 5
-    sticker_layout: str = "side_by_side"    # 视差高度补偿 (cm) - 用户指定标定纸悬空高度为 3cm
-    parallax_height_cm: float = 3.0     # 贴纸物理高度（厘米），用于消除斜视视差投影误差
+    sticker_layout: str = "side_by_side"  # 仅保留并排（左侧绿色，右侧蓝色）
+    parallax_height_cm: float = 0.0     # 贴纸物理高度（厘米），用于消除斜视视差投影误差
     
 
 
@@ -42,10 +42,10 @@ class CoverageConfig:
     output_dir: str = "outputs"
     
     # 实际物理尺寸（厘米）
-    real_brush_width_cm: float =2.5    # 主刷口实际宽度
-    real_brush_height_cm: float = 13.0    # 主刷口实际长度
-    real_remover_width_cm: float = 20.0  # 除螨仪实际宽度
-    real_remover_height_cm: float = 27.0 # 除螨仪实际长度
+    real_brush_width_cm: float = 15.0   # 主刷口实际宽度
+    real_brush_height_cm: float = 2.0    # 主刷口实际高度
+    real_remover_width_cm: float = 25.0  # 除螨仪实际宽度
+    real_remover_height_cm: float = 22.0 # 除螨仪实际长度/高度
 
 
 @dataclass

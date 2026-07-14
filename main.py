@@ -376,9 +376,7 @@ class MiteCoverageApp:
                     any_closed = True
                     break
             if any_closed:
-                print("\n用户关闭了结果窗口，直接退出程序。")
-                import sys
-                sys.exit(0)
+                break
                 
         cv2.destroyAllWindows()
         
