@@ -119,7 +119,7 @@ class CoverageCalculator:
         
         return mask
     
-    def add_point(self, x: int, y: int, angle: Optional[float] = None):
+    def add_point(self, x: int, y: int, angle: Optional[float] = None, width: Optional[float] = None):
         """
         添加轨迹点并更新覆盖
         
@@ -127,6 +127,7 @@ class CoverageCalculator:
             x: x坐标
             y: y坐标
             angle: 如果提供，则使用此角度而不是根据轨迹自动估算
+            width: 如果提供，则使用此动态宽度
         """
         # 边界检查
         x = max(0, min(x, self.bed_width - 1))
@@ -156,9 +157,12 @@ class CoverageCalculator:
                     final_angle = angle_motion - 90
                     self.current_angle = final_angle
         
+        # 获取刷口宽度
+        w = width if width is not None else self.brush_width_px
+        
         # 旋转矩形参数: ((cx, cy), (width, height), angle)
         rect = ((float(x), float(y)), 
-                (float(self.brush_width_px), float(self.brush_height_px)), 
+                (float(w), float(self.brush_height_px)), 
                 float(final_angle))
         box = cv2.boxPoints(rect)
         
@@ -230,10 +234,12 @@ class CoverageCalculator:
         批量添加轨迹点
         
         Args:
-            points: 轨迹点列表 [(x1,y1), (x1,y1,angle), ...]
+            points: 轨迹点列表 [(x1,y1), (x1,y1,angle), (x1,y1,angle,width)...]
         """
         for pt in points:
-            if len(pt) >= 3 and pt[2] is not None:
+            if len(pt) >= 4 and pt[2] is not None and pt[3] is not None:
+                self.add_point(pt[0], pt[1], float(pt[2]), float(pt[3]))
+            elif len(pt) >= 3 and pt[2] is not None:
                 self.add_point(pt[0], pt[1], float(pt[2]))
             else:
                 self.add_point(pt[0], pt[1])
@@ -245,13 +251,13 @@ class CoverageCalculator:
         Returns:
             覆盖率百分比 (0-100)
         """
-        total_cells = self.grid_rows * self.grid_cols
-        covered_cells = np.count_nonzero(self.coverage_mask)
+        total_pixels = self.bed_width * self.bed_height
+        covered_pixels = np.count_nonzero(self.heatmap > 0)
         
-        if total_cells == 0:
+        if total_pixels == 0:
             return 0.0
         
-        return (covered_cells / total_cells) * 100
+        return (covered_pixels / total_pixels) * 100
     
     def get_coverage_mask_image(self) -> np.ndarray:
         """

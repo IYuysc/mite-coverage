@@ -74,16 +74,21 @@ class BedSelector:
         
     def mouse_callback(self, event, x, y, flags, param):
         """鼠标点击回调函数"""
-        if event != cv2.EVENT_LBUTTONDOWN:
-            return
-        
-        if len(self.points) >= 4:
-            print("已选择4个点，按 'R' 重置，按 'S' 保存")
-            return
-        
-        self.points.append((x, y))
-        print(f"第{len(self.points)}个点: ({x}, {y})")
-        self.redraw()
+        # 左键添加点
+        if event == cv2.EVENT_LBUTTONDOWN:
+            if len(self.points) >= 4:
+                print("已选择4个点，按 'R' 重置，按 'S' 保存")
+                return
+            self.points.append((x, y))
+            print(f"第{len(self.points)}个点: ({x}, {y})")
+            self.redraw()
+            
+        # 右键回退一步
+        elif event == cv2.EVENT_RBUTTONDOWN:
+            if len(self.points) > 0:
+                removed_point = self.points.pop()
+                print(f"回退一步，取消了点: {removed_point}")
+                self.redraw()
         
     def redraw(self):
         """重绘显示图像"""
@@ -117,7 +122,9 @@ class BedSelector:
         help_text = [
             f"Selected: {len(self.points)}/4 points",
             "Controls:",
-            "R - Reset",
+            "Left-Click - Add point",
+            "Right-Click - Undo last point",
+            "R - Reset all",
             "S - Save & Exit",
             "Q - Quit"
         ]

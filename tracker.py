@@ -54,7 +54,7 @@ class SimpleKalmanFilter:
 class TrajectoryPoint:
     """轨迹点"""
     
-    def __init__(self, x: int, y: int, timestamp: float, frame_idx: int, bed_x: int = None, bed_y: int = None, bed_angle: float = None, tail_x: int = None, tail_y: int = None):
+    def __init__(self, x: int, y: int, timestamp: float, frame_idx: int, bed_x: int = None, bed_y: int = None, bed_angle: float = None, tail_x: int = None, tail_y: int = None, width: float = None):
         self.x = x
         self.y = y
         self.timestamp = timestamp  # 时间戳（秒）
@@ -64,6 +64,7 @@ class TrajectoryPoint:
         self.bed_angle = bed_angle
         self.tail_x = tail_x if tail_x is not None else x
         self.tail_y = tail_y if tail_y is not None else y
+        self.width = width
 
 
 class BlueTracker:
@@ -442,9 +443,8 @@ class BlueTracker:
                             ux = -dy_bed / D_bed
                             uy = dx_bed / D_bed
                             
-                            # 记录当前动态的主刷口宽度为两点之间的真实像素距离
-                            # （既然用户直接把贴纸贴在主刷两端，我们就不再做 1.3 倍放大了，做到 1:1 绝对吻合）
-                            self.last_dynamic_width_px = float(D_bed)
+                            # 用户要求蓝色主刷口比贴纸距离稍微宽一点点（乘以 1.15 倍）
+                            self.last_dynamic_width_px = float(D_bed) * 1.15
                             
                             # 放弃思路2的动态补偿，仅保留一个固定的基础物理前伸量
                             # 根据机身真实大小，设定恒定的前伸量 4.0 cm
@@ -501,13 +501,14 @@ class BlueTracker:
                     rx = int(round(max(0, min(rx, self.bed_config.width - 1))))
                     ry = int(round(max(0, min(ry, self.bed_config.height - 1))))
                     
-                    # 实时更新覆盖率计算器
-                    if realtime_calc is not None:
-                        realtime_calc.add_point(bx, by, float(box_angle))
-                    
-                    # 4. 在床面掩码上绘制主刷口清洁区域
                     # 蓝框的长度（左右跨度）根据两点之间的实时距离动态调整，若无则使用配置默认值
                     dynamic_w = getattr(self, 'last_dynamic_width_px', float(self.brush_width_px))
+                    
+                    # 实时更新覆盖率计算器
+                    if realtime_calc is not None:
+                        realtime_calc.add_point(bx, by, float(box_angle), dynamic_w)
+                    
+                    # 4. 在床面掩码上绘制主刷口清洁区域
                     rect_brush = ((float(bx), float(by)), (dynamic_w, float(self.brush_height_px)), float(box_angle))
                     box_brush = cv2.boxPoints(rect_brush)
                     
@@ -530,7 +531,8 @@ class BlueTracker:
                     x=brush_center[0], y=brush_center[1],
                     timestamp=timestamp, frame_idx=frame_idx,
                     bed_x=bx, bed_y=by, bed_angle=box_angle,
-                    tail_x=tail_center[0], tail_y=tail_center[1]
+                    tail_x=tail_center[0], tail_y=tail_center[1],
+                    width=dynamic_w
                 )
                 self.trajectory.append(point)
             else:

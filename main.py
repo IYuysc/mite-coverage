@@ -6,6 +6,7 @@ import os
 import sys
 import cv2
 import numpy as np
+import datetime
 
 # 导入模块
 from config import config_manager
@@ -148,6 +149,11 @@ class MiteCoverageApp:
             # 1. 追踪蓝色标记
             print(f"\n开始分析视频: {video_path}")
             tracker = BlueTracker(video_path)
+            video_basename = os.path.splitext(os.path.basename(video_path))[0]
+            timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            heatmap_filename = f"heatmap_{video_basename}_{timestamp_str}.jpg"
+            report_filename = f"report_{video_basename}_{timestamp_str}.jpg"
+            
             trajectory, bed_mask, first_frame = tracker.track(
                 output_video="outputs/tracking_result.mp4"
             )
@@ -164,7 +170,7 @@ class MiteCoverageApp:
                     # 边界检查
                     x = max(0, min(pt.bed_x, bed_config.width - 1))
                     y = max(0, min(pt.bed_y, bed_config.height - 1))
-                    bed_points.append((x, y, pt.bed_angle))
+                    bed_points.append((x, y, pt.bed_angle, pt.width))
             
             if not bed_points:
                 print("错误: 坐标转换失败")
@@ -213,7 +219,8 @@ class MiteCoverageApp:
 
             # 保存热力图到 outputs 中
             os.makedirs(self.output_dir, exist_ok=True)
-            cv2.imwrite(os.path.join(self.output_dir, "heatmap.jpg"), heatmap_img)
+            heatmap_path = os.path.join(self.output_dir, heatmap_filename)
+            cv2.imencode('.jpg', heatmap_img)[1].tofile(heatmap_path)
             
             # 2. 计算覆盖率随时间变化曲线并保存为临时图片
             coverage_history = []
@@ -270,18 +277,35 @@ class MiteCoverageApp:
                 # 在白底画布上无法直接画视频视角的红线，除非红线坐标是基于床铺的
                 # 但根据现有逻辑，红线坐标是视频像素坐标 (tail_x, tail_y)，所以只在有 first_frame 时绘制
             
-            # 在图上叠加清洁覆盖率文字，放大边框和字体
-            overlay_txt = coverage_img.copy()
-            cv2.rectangle(overlay_txt, (20, 20), (550, 110), (0, 0, 0), -1)
-            cv2.addWeighted(overlay_txt, 0.6, coverage_img, 0.4, 0, dst=coverage_img)
-            cv2.putText(coverage_img, f"Coverage: {coverage_rate}", (40, 80),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.8, (0, 255, 255), 4)
+            # 在图上叠加清洁覆盖率和视频时长文字
+            # 去除黑底，减小字号
+            duration_sec = tracker.total_frames / tracker.fps if tracker.fps > 0 else 0
+            
+            # 为了防止在白底上看不清，可以使用带黑色描边的文字
+            # 先画黑色粗边框，再画黄色细文字
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 1.2
+            font_thickness = 2
+            
+            text_coverage = f"Coverage: {coverage_rate}"
+            text_duration = f"Duration: {duration_sec:.1f}s"
+            text_time = f"Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            
+            # 绘制描边
+            cv2.putText(coverage_img, text_coverage, (30, 60), font, font_scale, (0, 0, 0), font_thickness + 2, cv2.LINE_AA)
+            cv2.putText(coverage_img, text_duration, (30, 110), font, font_scale, (0, 0, 0), font_thickness + 2, cv2.LINE_AA)
+            cv2.putText(coverage_img, text_time, (30, 160), font, font_scale, (0, 0, 0), font_thickness + 2, cv2.LINE_AA)
+            # 绘制内部黄色文字
+            cv2.putText(coverage_img, text_coverage, (30, 60), font, font_scale, (0, 255, 255), font_thickness, cv2.LINE_AA)
+            cv2.putText(coverage_img, text_duration, (30, 110), font, font_scale, (0, 255, 255), font_thickness, cv2.LINE_AA)
+            cv2.putText(coverage_img, text_time, (30, 160), font, font_scale, (0, 255, 255), font_thickness, cv2.LINE_AA)
             
             # 4. 拼接床铺扫掠图与时间变化曲线图
             curve_path = os.path.join(self.output_dir, temp_curve_name)
             final_combined = coverage_img
             if os.path.exists(curve_path):
-                curve_img = cv2.imread(curve_path)
+                # 使用 imdecode 支持中文路径
+                curve_img = cv2.imdecode(np.fromfile(curve_path, dtype=np.uint8), cv2.IMREAD_COLOR)
                 if curve_img is not None:
                     h_bed, w_bed = coverage_img.shape[:2]
                     h_curve, w_curve = curve_img.shape[:2]
@@ -295,12 +319,13 @@ class MiteCoverageApp:
                 except Exception:
                     pass
             
-            # 5. 保存拼合后的综合结果图为 report.jpg
-            cv2.imwrite(os.path.join(self.output_dir, "report.jpg"), final_combined)
+            # 5. 保存拼合后的综合结果图
+            report_path = os.path.join(self.output_dir, report_filename)
+            cv2.imencode('.jpg', final_combined)[1].tofile(report_path)
             
             print("\n✓ 分析完成！")
-            print(f"  热力图已保存: {self.output_dir}/heatmap.jpg")
-            print(f"  覆盖率报告已保存: {self.output_dir}/report.jpg")
+            print(f"  热力图已保存: {self.output_dir}/{heatmap_filename}")
+            print(f"  覆盖率报告已保存: {self.output_dir}/{report_filename}")
             print(f"  主刷口大小: {calculator.brush_width_px}x{calculator.brush_height_px} 像素 ({calculator.config.real_brush_width_cm}x{calculator.config.real_brush_height_cm} 厘米)")
             
             # 显示实际覆盖面积
@@ -309,19 +334,22 @@ class MiteCoverageApp:
                 print(f"  实际覆盖面积: {stats['covered_area']}")
             
             # 6. 分析结束后，仅弹出一张完整淡蓝色路线+覆盖率+曲线的综合结果图
-            win_name = "Analysis Report (Coverage & Trend Curve)"
-            imshow_adaptive(win_name, final_combined, max_ratio=0.85)
+            # 使用 matplotlib 显示结果图，自带放大、拖拽平移、自适应屏幕的功能
+            import matplotlib.pyplot as plt
+            plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'SimSun']
+            plt.rcParams['axes.unicode_minus'] = False
             
-            print("\n按任意键、ESC、或点击右上角 X 关闭窗口以继续...")
-            while True:
-                key = cv2.waitKey(100) & 0xFF
-                # 支持按任意键或 ESC 退出
-                if key != 255:
-                    break
-                # 检测右上角 X 关闭按钮
-                if cv2.getWindowProperty(win_name, cv2.WND_PROP_VISIBLE) < 1:
-                    break
-            cv2.destroyAllWindows()
+            print("\n请在弹出的结果窗口中查看报告，你可以使用窗口上方的工具栏放大或拖拽图片。关闭图片窗口即可继续...")
+            
+            # 将 BGR 转换为 RGB 以供 matplotlib 显示
+            final_rgb = cv2.cvtColor(final_combined, cv2.COLOR_BGR2RGB)
+            
+            # 创建绘图窗口
+            fig = plt.figure("Analysis Report (Coverage & Trend Curve)", figsize=(12, 6))
+            plt.imshow(final_rgb)
+            plt.axis('off')  # 隐藏坐标轴
+            plt.tight_layout()
+            plt.show()  # 这会阻塞，直到用户关闭图片窗口
             
         except Exception as e:
             print(f"\n错误: {e}")
@@ -364,8 +392,9 @@ class MiteCoverageApp:
         
         for filename, title in result_files.items():
             filepath = os.path.join(output_dir, filename)
-            if os.path.exists(filepath):
-                img = cv2.imread(filepath)
+            if os.path.exists(filepath) and filepath.lower().endswith(('.png', '.jpg', '.jpeg')):
+                # 支持中文路径读取
+                img = cv2.imdecode(np.fromfile(filepath, dtype=np.uint8), cv2.IMREAD_COLOR)
                 if img is not None:
                     imshow_adaptive(title, img)
         

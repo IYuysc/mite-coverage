@@ -46,7 +46,7 @@ def imshow_adaptive(window_name: str, img: np.ndarray, max_ratio: float = 0.82):
         win_w = int(round(w * scale))
         win_h = int(round(h * scale))
         
-        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
         cv2.resizeWindow(window_name, win_w, win_h)
         cv2.moveWindow(window_name, int(screen_w/2 - win_w/2), int(screen_h/2 - win_h/2))
         imshow_adaptive._initialized_windows.add(window_name)
@@ -59,6 +59,9 @@ def imshow_adaptive(window_name: str, img: np.ndarray, max_ratio: float = 0.82):
 def create_coverage_curve(history: list, timestamps: list, output_path: str):
     """绘制覆盖率随时间变化的曲线并保存"""
     import matplotlib.pyplot as plt
+    plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'SimSun']
+    plt.rcParams['axes.unicode_minus'] = False
+    
     plt.figure(figsize=(6, 4), dpi=100)
     plt.plot(timestamps, history, color='#29B6F6', linewidth=2.5)
     plt.title("Coverage Rate Trend", fontsize=12, fontweight='bold', pad=10)
