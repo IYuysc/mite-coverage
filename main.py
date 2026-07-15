@@ -251,6 +251,12 @@ class MiteCoverageApp:
                     overlay = first_frame.copy()
                     overlay[bed_mask_warped_back > 0] = [235, 206, 135]  # 淡蓝色 BGR [235, 206, 135]
                     cv2.addWeighted(overlay, 0.35, coverage_img, 0.65, 0, dst=coverage_img)
+                    
+                # 绘制整条机身运动的红色轨迹线
+                if trajectory and len(trajectory) > 1:
+                    pts = np.array([[p.tail_x, p.tail_y] for p in trajectory], np.int32)
+                    pts = pts.reshape((-1, 1, 2))
+                    cv2.polylines(coverage_img, [pts], isClosed=False, color=(150, 150, 255), thickness=2, lineType=cv2.LINE_AA)
             else:
                 # 兜底：采用白底画布
                 bed_h = bed_config.height or 500
@@ -260,6 +266,9 @@ class MiteCoverageApp:
                     overlay = coverage_img.copy()
                     overlay[bed_mask > 0] = [235, 206, 135]
                     cv2.addWeighted(overlay, 0.35, coverage_img, 0.65, 0, dst=coverage_img)
+                
+                # 在白底画布上无法直接画视频视角的红线，除非红线坐标是基于床铺的
+                # 但根据现有逻辑，红线坐标是视频像素坐标 (tail_x, tail_y)，所以只在有 first_frame 时绘制
             
             # 在图上叠加清洁覆盖率文字，放大边框和字体
             overlay_txt = coverage_img.copy()

@@ -263,7 +263,7 @@ class BlueTracker:
             blue_center = self._find_marker_center(blue_mask)
             green_center = self._find_marker_center(green_mask)
             
-            # 距离约束：蓝色和绿色标定纸的距离不能超过机身的大小
+            # 距离约束：蓝色和绿色标定纸的距离不能超过机身的大小 (严格限制)
             if blue_center and green_center and self.has_bed_config:
                 pt_v_b = np.array([[[blue_center[0], blue_center[1]]]], dtype=np.float32)
                 pt_v_g = np.array([[[green_center[0], green_center[1]]]], dtype=np.float32)
@@ -276,40 +276,50 @@ class BlueTracker:
                 max_size_cm = max(self.coverage_config.real_remover_width_cm or 25.0, 
                                   self.coverage_config.real_remover_height_cm or 22.0)
                 
-                if dist_cm > max_size_cm * 1.5:  # 允许一定的误差裕度(1.5倍)
+                # 真实贴纸距离大约十几厘米，最大限制设为机身最长边的 1.1 倍，绝对不允许拉跨到其他地方
+                if dist_cm > max_size_cm * 1.1:
                     blue_center = None
                     green_center = None
             
-            # === EMA平滑处理，消除像素级抖动 ===
-            # 根据播放倍速动态调整 alpha，防止倍速跳帧时标定点产生严重拖尾延迟
-            base_alpha = 0.15  # 降低基础平滑系数，增强抗抖动能力，让红线变得丝滑
+            # === EMA平滑处理与防瞬间跳变 ===
+            base_alpha = 0.15
             alpha = 1.0 - (1.0 - base_alpha) ** play_speed
+            max_jump_px = 60 * play_speed  # 每帧最大允许的物理位移像素
 
             if blue_center:
                 if getattr(self, 'smoothed_blue', None) is None:
                     self.smoothed_blue = np.array(blue_center, dtype=float)
+                    self.blue_reject_count = 0
                 else:
                     dist = np.hypot(blue_center[0] - self.smoothed_blue[0], blue_center[1] - self.smoothed_blue[1])
-                    if dist > 150 * play_speed:  # 放宽跳跃判定距离，防止倍速时误判为跳变从而绕过平滑
-                        self.smoothed_blue = np.array(blue_center, dtype=float)
+                    if dist > max_jump_px and getattr(self, 'blue_reject_count', 0) < 15:
+                        # 瞬间跳变，拒绝接受，保持上一帧的位置 (最多容忍连续15帧跳变，防止死锁)
+                        self.blue_reject_count = getattr(self, 'blue_reject_count', 0) + 1
+                        blue_center = (int(round(self.smoothed_blue[0])), int(round(self.smoothed_blue[1])))
                     else:
+                        self.blue_reject_count = 0
                         self.smoothed_blue = self.smoothed_blue * (1 - alpha) + np.array(blue_center, dtype=float) * alpha
-                blue_center = (int(round(self.smoothed_blue[0])), int(round(self.smoothed_blue[1])))
+                        blue_center = (int(round(self.smoothed_blue[0])), int(round(self.smoothed_blue[1])))
             else:
                 self.smoothed_blue = None
+                self.blue_reject_count = 0
                 
             if green_center:
                 if getattr(self, 'smoothed_green', None) is None:
                     self.smoothed_green = np.array(green_center, dtype=float)
+                    self.green_reject_count = 0
                 else:
                     dist = np.hypot(green_center[0] - self.smoothed_green[0], green_center[1] - self.smoothed_green[1])
-                    if dist > 150 * play_speed:
-                        self.smoothed_green = np.array(green_center, dtype=float)
+                    if dist > max_jump_px and getattr(self, 'green_reject_count', 0) < 15:
+                        self.green_reject_count = getattr(self, 'green_reject_count', 0) + 1
+                        green_center = (int(round(self.smoothed_green[0])), int(round(self.smoothed_green[1])))
                     else:
+                        self.green_reject_count = 0
                         self.smoothed_green = self.smoothed_green * (1 - alpha) + np.array(green_center, dtype=float) * alpha
-                green_center = (int(round(self.smoothed_green[0])), int(round(self.smoothed_green[1])))
+                        green_center = (int(round(self.smoothed_green[0])), int(round(self.smoothed_green[1])))
             else:
                 self.smoothed_green = None
+                self.green_reject_count = 0
             
             # 2. 获取坐标
             bx_v, by_v = None, None
@@ -428,16 +438,17 @@ class BlueTracker:
                         D_bed = np.hypot(dx_bed, dy_bed)
                         
                         if D_bed > 0:
-                            # 机器前行朝向单位向量 (在床面坐标系下：连线向左旋转90度)
+                            # 机器前行朝向单位向量 (恢复为 -dy, dx，因为标定点确实是蓝右绿左)
                             ux = -dy_bed / D_bed
                             uy = dx_bed / D_bed
                             
-                            # 记录当前动态的主刷口宽度为两点之间的真实像素距离，并按用户要求加宽一些（例如扩大 1.3 倍）
-                            self.last_dynamic_width_px = float(D_bed) * 1.3
+                            # 记录当前动态的主刷口宽度为两点之间的真实像素距离
+                            # （既然用户直接把贴纸贴在主刷两端，我们就不再做 1.3 倍放大了，做到 1:1 绝对吻合）
+                            self.last_dynamic_width_px = float(D_bed)
                             
-                            # 物理前伸量：根据用户要求，蓝色区域要在标定点前方一些
-                            # （视差补偿已修正了透视，这里的前伸量是真实的物理距离）
-                            offset_cm = 3.0
+                            # 放弃思路2的动态补偿，仅保留一个固定的基础物理前伸量
+                            # 根据机身真实大小，设定恒定的前伸量 4.0 cm
+                            offset_cm = 4.0
                             
                             # 机身中心 (直接由两点中点确定)
                             rx = 0.5 * (bx_b + gx_b)
@@ -535,20 +546,20 @@ class BlueTracker:
                 overlay[warped_back > 0] = [235, 206, 135]  # 淡蓝色 BGR [235, 206, 135]
                 cv2.addWeighted(overlay, 0.35, frame, 0.65, 0, dst=frame)
             
-            # 绘制标定点
+            # 绘制标定点 (使用 LINE_AA 开启抗锯齿，边缘更平滑)
             if blue_center:
-                cv2.circle(frame, blue_center, 3, (255, 0, 0), -1)  # 蓝色圆点缩小为3
+                cv2.circle(frame, blue_center, 2, (255, 0, 0), -1, cv2.LINE_AA)
             if green_center:
-                cv2.circle(frame, green_center, 3, (0, 255, 0), -1)  # 绿色圆点缩小为3
+                cv2.circle(frame, green_center, 2, (0, 255, 0), -1, cv2.LINE_AA)
             # 用户要求取消黄线
             # if blue_center and green_center:
-            #     cv2.line(frame, blue_center, green_center, (0, 255, 255), 2)  # 黄线连接两点
+            #     cv2.line(frame, blue_center, green_center, (0, 255, 255), 2, cv2.LINE_AA)
 
-            # 绘制机身走过的轨迹（红线），使用tail_x和tail_y，颜色淡一点
+            # 绘制机身走过的轨迹（红线），使用tail_x和tail_y，颜色淡一点，并且把线宽调得更细致
             if len(self.trajectory) > 1:
                 pts = np.array([[p.tail_x, p.tail_y] for p in self.trajectory], np.int32)
                 pts = pts.reshape((-1, 1, 2))
-                cv2.polylines(frame, [pts], isClosed=False, color=(150, 150, 255), thickness=2)
+                cv2.polylines(frame, [pts], isClosed=False, color=(150, 150, 255), thickness=2, lineType=cv2.LINE_AA)
 
             # 显示常规信息
             cv2.putText(frame, f"Frame: {frame_idx}/{self.total_frames}",
