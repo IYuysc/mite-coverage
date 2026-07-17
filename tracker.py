@@ -232,6 +232,13 @@ class BlueTracker:
 
         first_frame = None
         
+        # 构建床铺区域的 ROI 掩码，用于剔除床铺外的干扰颜色
+        bed_roi_mask = None
+        if self.has_bed_config and self.bed_config.points:
+            bed_roi_mask = np.zeros((self.height, self.width), dtype=np.uint8)
+            pts = np.array(self.bed_config.points, dtype=np.int32)
+            cv2.fillPoly(bed_roi_mask, [pts], 255)
+            
         play_speed = 1
         
         while True:
@@ -259,6 +266,11 @@ class BlueTracker:
             # 提取蓝色和绿色掩码
             blue_mask = self._get_color_mask(frame, lower_blue, upper_blue)
             green_mask = self._get_color_mask(frame, lower_green, upper_green)
+            
+            # 若配置了床铺范围，则仅在床铺范围内进行识别，过滤背景干扰
+            if bed_roi_mask is not None:
+                blue_mask = cv2.bitwise_and(blue_mask, bed_roi_mask)
+                green_mask = cv2.bitwise_and(green_mask, bed_roi_mask)
             
             # 查找两个标记的中心
             blue_center = self._find_marker_center(blue_mask)
