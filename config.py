@@ -11,10 +11,10 @@ from typing import Tuple, Optional
 @dataclass
 class TrackerConfig:
     """追踪器配置"""
-    blue_lower_h: int = 105
-    blue_lower_s: int = 130
-    blue_lower_v: int = 30
-    blue_upper_h: int = 130
+    blue_lower_h: int = 120
+    blue_lower_s: int = 160
+    blue_lower_v: int = 50
+    blue_upper_h: int = 150
     blue_upper_s: int = 255
     blue_upper_v: int = 255
     

@@ -632,11 +632,10 @@ class BlueTracker:
                 if key in [27, ord('q'), ord('Q')]:
                     print("\n用户主动结束追踪，准备生成报告...")
                     break
-                # 如果用户直接点击右上角 X 关闭窗口，则直接退出整个程序
+                # 如果用户直接点击右上角 X 关闭窗口，则结束当前追踪循环
                 elif cv2.getWindowProperty("Tracking", cv2.WND_PROP_VISIBLE) < 1:
-                    print("\n用户关闭了追踪窗口，直接退出程序。")
-                    import sys
-                    sys.exit(0)
+                    print("\n用户关闭了追踪窗口，提前结束当前分析。")
+                    break
             
             frame_idx += 1
         

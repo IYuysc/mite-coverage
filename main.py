@@ -39,44 +39,47 @@ class MiteCoverageApp:
         print("  5. 退出")
         print()
         
-    def calibrate_bed_area(self):
+    def calibrate_bed_area(self, video_path=None):
         """标定床铺区域"""
         print("\n=== 床铺区域标定 ===")
         
-        # 从视频标定
-        video_dir = "videos"
-        if not os.path.exists(video_dir):
-            print(f"错误: 视频目录不存在 {video_dir}")
-            input("按回车键继续...")
-            return
+        is_gui = video_path is not None
         
-        videos = [f for f in os.listdir(video_dir)
-                 if f.endswith(('.mp4', '.avi', '.mov', '.MOV'))]
-        
-        if not videos:
-            print(f"错误: 在 {video_dir} 目录中未找到视频文件")
-            print("请将测试录像放入 videos/ 目录")
-            input("按回车键继续...")
-            return
-        
-        # 显示视频列表
-        print("\n找到以下视频文件:")
-        for i, video in enumerate(videos, 1):
-            print(f"  {i}. {video}")
-        
-        if len(videos) == 1:
-            video_path = os.path.join(video_dir, videos[0])
-        else:
-            try:
-                video_choice = int(input("\n请选择视频编号: ")) - 1
-                if 0 <= video_choice < len(videos):
-                    video_path = os.path.join(video_dir, videos[video_choice])
-                else:
-                    print("无效选择")
-                    return
-            except ValueError:
-                print("无效输入")
+        if not is_gui:
+            # 从视频标定
+            video_dir = "videos"
+            if not os.path.exists(video_dir):
+                print(f"错误: 视频目录不存在 {video_dir}")
+                input("按回车键继续...")
                 return
+            
+            videos = [f for f in os.listdir(video_dir)
+                     if f.endswith(('.mp4', '.avi', '.mov', '.MOV'))]
+            
+            if not videos:
+                print(f"错误: 在 {video_dir} 目录中未找到视频文件")
+                print("请将测试录像放入 videos/ 目录")
+                input("按回车键继续...")
+                return
+            
+            # 显示视频列表
+            print("\n找到以下视频文件:")
+            for i, video in enumerate(videos, 1):
+                print(f"  {i}. {video}")
+            
+            if len(videos) == 1:
+                video_path = os.path.join(video_dir, videos[0])
+            else:
+                try:
+                    video_choice = int(input("\n请选择视频编号: ")) - 1
+                    if 0 <= video_choice < len(videos):
+                        video_path = os.path.join(video_dir, videos[video_choice])
+                    else:
+                        print("无效选择")
+                        return
+                except ValueError:
+                    print("无效输入")
+                    return
         
         try:
             # 从视频第一帧标定
@@ -97,53 +100,57 @@ class MiteCoverageApp:
             import traceback
             traceback.print_exc()
         
-        input("\n按回车键继续...")
+        if not is_gui:
+            input("\n按回车键继续...")
     
-    def analyze_video(self):
+    def analyze_video(self, video_path=None):
         """分析录像"""
         print("\n=== 录像分析 ===")
+        
+        is_gui = video_path is not None
         
         # 检查床铺区域配置
         bed_config = self.config.get_bed_area_config()
         if not bed_config.points or len(bed_config.points) != 4:
             print("错误: 请先标定床铺区域（选择菜单1）")
-            input("按回车键继续...")
+            if not is_gui: input("按回车键继续...")
             return
         
-        # 查找视频
-        video_dir = "videos"
-        if not os.path.exists(video_dir):
-            print(f"错误: 视频目录不存在 {video_dir}")
-            input("按回车键继续...")
-            return
-        
-        videos = [f for f in os.listdir(video_dir) 
-                 if f.endswith(('.mp4', '.avi', '.mov', '.MOV'))]
-        
-        if not videos:
-            print(f"错误: 在 {video_dir} 目录中未找到视频文件")
-            print("支持的格式: .mp4, .avi, .mov")
-            input("按回车键继续...")
-            return
-        
-        # 显示视频列表
-        print("\n找到以下视频文件:")
-        for i, video in enumerate(videos, 1):
-            print(f"  {i}. {video}")
-        
-        if len(videos) == 1:
-            video_path = os.path.join(video_dir, videos[0])
-        else:
-            try:
-                choice = int(input("\n请选择视频编号: ")) - 1
-                if 0 <= choice < len(videos):
-                    video_path = os.path.join(video_dir, videos[choice])
-                else:
-                    print("无效选择")
-                    return
-            except ValueError:
-                print("无效输入")
+        if not is_gui:
+            # 查找视频
+            video_dir = "videos"
+            if not os.path.exists(video_dir):
+                print(f"错误: 视频目录不存在 {video_dir}")
+                input("按回车键继续...")
                 return
+            
+            videos = [f for f in os.listdir(video_dir) 
+                     if f.endswith(('.mp4', '.avi', '.mov', '.MOV'))]
+            
+            if not videos:
+                print(f"错误: 在 {video_dir} 目录中未找到视频文件")
+                print("支持的格式: .mp4, .avi, .mov")
+                input("按回车键继续...")
+                return
+            
+            # 显示视频列表
+            print("\n找到以下视频文件:")
+            for i, video in enumerate(videos, 1):
+                print(f"  {i}. {video}")
+            
+            if len(videos) == 1:
+                video_path = os.path.join(video_dir, videos[0])
+            else:
+                try:
+                    choice = int(input("\n请选择视频编号: ")) - 1
+                    if 0 <= choice < len(videos):
+                        video_path = os.path.join(video_dir, videos[choice])
+                    else:
+                        print("无效选择")
+                        return
+                except ValueError:
+                    print("无效输入")
+                    return
         
         try:
             # 1. 追踪蓝色标记
@@ -333,30 +340,39 @@ class MiteCoverageApp:
                 print(f"  床铺实际尺寸: {stats['real_bed_size']}")
                 print(f"  实际覆盖面积: {stats['covered_area']}")
             
-            # 6. 分析结束后，仅弹出一张完整淡蓝色路线+覆盖率+曲线的综合结果图
-            # 使用 matplotlib 显示结果图，自带放大、拖拽平移、自适应屏幕的功能
-            import matplotlib.pyplot as plt
-            plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'SimSun']
-            plt.rcParams['axes.unicode_minus'] = False
-            
-            print("\n请在弹出的结果窗口中查看报告，你可以使用窗口上方的工具栏放大或拖拽图片。关闭图片窗口即可继续...")
-            
-            # 将 BGR 转换为 RGB 以供 matplotlib 显示
-            final_rgb = cv2.cvtColor(final_combined, cv2.COLOR_BGR2RGB)
-            
-            # 创建绘图窗口
-            fig = plt.figure("Analysis Report (Coverage & Trend Curve)", figsize=(12, 6))
-            plt.imshow(final_rgb)
-            plt.axis('off')  # 隐藏坐标轴
-            plt.tight_layout()
-            plt.show()  # 这会阻塞，直到用户关闭图片窗口
+            # 6. 分析结束后，显示综合结果图
+            if not is_gui:
+                import matplotlib.pyplot as plt
+                plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'SimSun']
+                plt.rcParams['axes.unicode_minus'] = False
+                
+                print("\n请在弹出的结果窗口中查看报告，你可以使用窗口上方的工具栏放大或拖拽图片。关闭图片窗口即可继续...")
+                
+                final_rgb = cv2.cvtColor(final_combined, cv2.COLOR_BGR2RGB)
+                fig = plt.figure("Analysis Report (Coverage & Trend Curve)", figsize=(12, 6))
+                plt.imshow(final_rgb)
+                plt.axis('off')
+                plt.tight_layout()
+                plt.show()
+            else:
+                print("\n正在尝试打开生成的覆盖率报告...")
+                import platform
+                if platform.system() == "Windows":
+                    os.startfile(report_path)
+                elif platform.system() == "Darwin":
+                    import subprocess
+                    subprocess.Popen(["open", report_path])
+                else:
+                    import subprocess
+                    subprocess.Popen(["xdg-open", report_path])
             
         except Exception as e:
             print(f"\n错误: {e}")
             import traceback
             traceback.print_exc()
         
-        input("\n按回车键继续...")
+        if not is_gui:
+            input("\n按回车键继续...")
     
     
     def view_results(self):
@@ -620,6 +636,7 @@ def main():
     try:
         import cv2
         import numpy as np
+        from PyQt5.QtWidgets import QApplication
         print("依赖检查通过")
     except ImportError as e:
         print(f"缺少依赖: {e}")
@@ -631,10 +648,14 @@ def main():
     os.makedirs("videos", exist_ok=True)
     os.makedirs("images", exist_ok=True)
     
-    # 运行应用
-    app = MiteCoverageApp()
-    app.run()
-
+    # 运行GUI应用
+    try:
+        from gui import run_gui
+        run_gui()
+    except Exception as e:
+        print(f"启动 GUI 失败: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     main()
