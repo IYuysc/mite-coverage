@@ -18,10 +18,10 @@ class TrackerConfig:
     blue_upper_s: int = 255
     blue_upper_v: int = 255
     
-    green_lower_h: int = 55
-    green_lower_s: int = 120
-    green_lower_v: int = 80
-    green_upper_h: int = 85
+    green_lower_h: int = 30
+    green_lower_s: int = 35
+    green_lower_v: int = 35
+    green_upper_h: int = 55
     green_upper_s: int = 255
     green_upper_v: int = 255
     

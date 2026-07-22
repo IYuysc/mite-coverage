@@ -233,11 +233,25 @@ class BlueTracker:
         first_frame = None
         
         # 构建床铺区域的 ROI 掩码，用于剔除床铺外的干扰颜色
+        # 外扩一圈识别范围（扩展约 25cm 或比例边距），防止除螨仪靠边/出界清扫时标定纸超出床面多边形而无法识别
         bed_roi_mask = None
         if self.has_bed_config and self.bed_config.points:
             bed_roi_mask = np.zeros((self.height, self.width), dtype=np.uint8)
             pts = np.array(self.bed_config.points, dtype=np.int32)
             cv2.fillPoly(bed_roi_mask, [pts], 255)
+            
+            # 计算外扩边距（优先使用物理 25cm，无物理尺寸时退回为分辨率尺寸的 12%）
+            margin_cm = 25.0
+            if getattr(self, 'pixel_to_cm_x', None) and getattr(self, 'pixel_to_cm_y', None) and self.pixel_to_cm_x > 0 and self.pixel_to_cm_y > 0:
+                margin_px = int(round(margin_cm / min(self.pixel_to_cm_x, self.pixel_to_cm_y)))
+            else:
+                margin_px = int(round(min(self.width, self.height) * 0.12))
+            
+            margin_px = max(30, min(margin_px, 300))  # 安全范围限制
+            
+            # 膨胀掩码外扩识别范围
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (margin_px * 2 + 1, margin_px * 2 + 1))
+            bed_roi_mask = cv2.dilate(bed_roi_mask, kernel)
             
         play_speed = 1
         

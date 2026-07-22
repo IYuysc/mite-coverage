@@ -10,7 +10,7 @@ import datetime
 
 # 导入模块
 from config import config_manager
-from bed_selector import BedSelector
+from bed_selector import BedSelector 
 from tracker import BlueTracker
 from coverage import CoverageCalculator
 from utils import imshow_adaptive, create_coverage_curve
