@@ -9,6 +9,7 @@ from PyQt5.QtCore import pyqtSignal, QObject, Qt, QThread
 
 from config import config_manager
 from bed_selector import BedSelector
+from excluded_selector import ExcludedAreaSelector
 from main import MiteCoverageApp
 
 class StreamRedirector(QObject):
@@ -76,18 +77,23 @@ class MainWindow(QMainWindow):
         btn_layout = QVBoxLayout()
         
         self.btn_calibrate = QPushButton("1. 标定床铺区域 (选择视频)")
-        self.btn_calibrate.setMinimumHeight(50)
+        self.btn_calibrate.setMinimumHeight(45)
         self.btn_calibrate.clicked.connect(self.on_calibrate)
         
+        self.btn_exclude = QPushButton("1.5 标注/去除多余区域 (如枕头)")
+        self.btn_exclude.setMinimumHeight(45)
+        self.btn_exclude.clicked.connect(self.on_exclude_area)
+        
         self.btn_analyze = QPushButton("2. 分析测试视频 (计算覆盖率)")
-        self.btn_analyze.setMinimumHeight(50)
+        self.btn_analyze.setMinimumHeight(45)
         self.btn_analyze.clicked.connect(self.on_analyze)
         
         self.btn_view = QPushButton("3. 查看结果目录")
-        self.btn_view.setMinimumHeight(50)
+        self.btn_view.setMinimumHeight(45)
         self.btn_view.clicked.connect(self.on_view_results)
         
         btn_layout.addWidget(self.btn_calibrate)
+        btn_layout.addWidget(self.btn_exclude)
         btn_layout.addWidget(self.btn_analyze)
         btn_layout.addWidget(self.btn_view)
         group.setLayout(btn_layout)
@@ -143,6 +149,7 @@ class MainWindow(QMainWindow):
         add_spinbox("min_area", "最小检测区域(像素)", trk.min_area, 1, 10000, 10)
         add_spinbox("grid_size", "覆盖网格大小(像素)", cov.grid_size, 1, 100)
         add_spinbox("parallax", "贴纸高度视差补偿(cm)", getattr(trk, 'parallax_height_cm', 0.0), 0.0, 50.0, 0.5, True)
+        add_spinbox("output_speed", "默认播放/分析倍速", int(getattr(trk, 'output_video_speed', 16)), 1, 64)
         
         scroll.setWidget(content)
         layout.addWidget(scroll)
@@ -175,27 +182,60 @@ class MainWindow(QMainWindow):
                 success = selector.run()
                 if success:
                     print("✓ 床铺区域标定成功，配置已保存。")
+                    reply = QMessageBox.question(
+                        self,
+                        "开始追踪提示",
+                        "床铺区域标定成功！是否直接就当前视频开始追踪分析？",
+                        QMessageBox.Yes | QMessageBox.No,
+                        QMessageBox.Yes
+                    )
+                    if reply == QMessageBox.Yes:
+                        self.start_analysis(video_path)
+                    else:
+                        print("已取消直接追踪，您可以从主界面点击“分析测试视频”手动选择。")
                 else:
                     print("✗ 标定取消或失败。")
             except Exception as e:
                 print(f"错误: {e}")
 
+    def on_exclude_area(self):
+        try:
+            print("正在启动床铺排除区域（枕头等）标注...")
+            selector = ExcludedAreaSelector()
+            success = selector.run()
+            if success:
+                print("✓ 排除区域配置已更新。分析时将自动扣除该部分面积。")
+            else:
+                print("已取消或未更改排除区域配置。")
+        except Exception as e:
+            print(f"标注排除区域出错: {e}")
+            QMessageBox.warning(self, "提示", str(e))
+
     def on_analyze(self):
         video_path, _ = QFileDialog.getOpenFileName(self, "选择要分析的视频", "videos", "Video Files (*.mp4 *.avi *.mov)")
         if video_path:
-            self.btn_analyze.setEnabled(False)
-            print(f"准备分析视频: {video_path}")
-            self.thread = AnalysisThread(video_path)
-            self.thread.finished_signal.connect(self.on_analyze_finished)
-            self.thread.error_signal.connect(self.on_analyze_error)
-            self.thread.start()
+            self.start_analysis(video_path)
+
+    def start_analysis(self, video_path):
+        self.btn_analyze.setEnabled(False)
+        self.btn_calibrate.setEnabled(False)
+        self.btn_exclude.setEnabled(False)
+        print(f"准备分析视频: {video_path}")
+        self.thread = AnalysisThread(video_path)
+        self.thread.finished_signal.connect(self.on_analyze_finished)
+        self.thread.error_signal.connect(self.on_analyze_error)
+        self.thread.start()
 
     def on_analyze_finished(self):
         self.btn_analyze.setEnabled(True)
+        self.btn_calibrate.setEnabled(True)
+        self.btn_exclude.setEnabled(True)
         print("分析线程完成。")
 
     def on_analyze_error(self, err):
         self.btn_analyze.setEnabled(True)
+        self.btn_calibrate.setEnabled(True)
+        self.btn_exclude.setEnabled(True)
         print(f"分析线程报错: {err}")
 
     def on_view_results(self):
@@ -243,6 +283,7 @@ class MainWindow(QMainWindow):
         
         trk.min_area = self.fields["min_area"].value()
         trk.parallax_height_cm = self.fields["parallax"].value()
+        trk.output_video_speed = float(self.fields["output_speed"].value())
         
         config_manager.save()
         print("✓ 参数已成功保存到 config.json！")

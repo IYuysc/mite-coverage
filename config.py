@@ -29,6 +29,8 @@ class TrackerConfig:
     morph_kernel_size: int = 5
     sticker_layout: str = "side_by_side"    # 视差高度补偿 (cm) - 用户指定标定纸悬空高度为 3cm
     parallax_height_cm: float = 3.0     # 贴纸物理高度（厘米），用于消除斜视视差投影误差
+    output_video_speed: float = 16.0    # 默认播放/分析倍速（16倍速）
+
     
 
 
@@ -58,10 +60,13 @@ class BedAreaConfig:
     real_height_cm: int = 0  # 实际高度（厘米）
     calibration_video_width: int = 0   # 标定时的原视频宽度
     calibration_video_height: int = 0  # 标定时的原视频高度
+    excluded_polygons: list = None     # 排除区域多边形列表 [[[x1,y1], [x2,y2]...], ...]
     
     def __post_init__(self):
         if self.points is None:
             self.points = []
+        if self.excluded_polygons is None:
+            self.excluded_polygons = []
 
     def get_scaled_points(self, current_width: int, current_height: int) -> list:
         """根据当前视频尺寸自适应缩放标定的床面四角点"""
@@ -148,6 +153,7 @@ class ConfigManager:
                      real_width_cm: int = 0, real_height_cm: int = 0,
                      calibration_video_width: int = 0, calibration_video_height: int = 0):
         """设置床铺区域"""
+        prev_excluded = getattr(self.config.bed_area, 'excluded_polygons', [])
         self.config.bed_area = BedAreaConfig(
             points=points,
             width=width,
@@ -155,8 +161,14 @@ class ConfigManager:
             real_width_cm=real_width_cm,
             real_height_cm=real_height_cm,
             calibration_video_width=calibration_video_width,
-            calibration_video_height=calibration_video_height
+            calibration_video_height=calibration_video_height,
+            excluded_polygons=prev_excluded
         )
+        self.save()
+
+    def set_excluded_polygons(self, excluded_polygons: list):
+        """设置床铺排除区域多边形列表"""
+        self.config.bed_area.excluded_polygons = excluded_polygons
         self.save()
 
 

@@ -72,3 +72,41 @@ def create_coverage_curve(history: list, timestamps: list, output_path: str):
     plt.savefig(output_path, bbox_inches='tight')
     plt.close()
 
+
+def draw_hatched_excluded_region(img: np.ndarray, mask: np.ndarray, label: str = None) -> np.ndarray:
+    """
+    在图像上的 mask 区域绘制柔和自然的灰色半透明阴影与浅灰细斜纹，表示未计算入覆盖率
+    """
+    if img is None or mask is None or not np.any(mask > 0):
+        return img
+        
+    h, w = img.shape[:2]
+    mask_uint8 = mask.astype(np.uint8)
+    mask_bool = mask_uint8 > 0
+    
+    # 1. 柔和自然的半透明灰色阴影
+    overlay = img.copy()
+    overlay[mask_bool] = [60, 60, 60]  # 柔和中灰色 BGR
+    cv2.addWeighted(overlay, 0.30, img, 0.70, 0, dst=img)
+    
+    # 2. 绘制极淡浅灰细斜纹 (非死黑，柔和半透明融入)
+    hatch_mask = np.zeros((h, w), dtype=np.uint8)
+    stripe_step = 14  # 斜纹间距
+    for d in range(-h, w + h, stripe_step):
+        cv2.line(hatch_mask, (d, 0), (d + h, h), 255, 1, cv2.LINE_AA)
+        
+    hatch_in_mask = cv2.bitwise_and(hatch_mask, hatch_mask, mask=mask_uint8)
+    
+    # 柔和混合斜纹，避免过深的黑色斜线条
+    hatch_overlay = img.copy()
+    hatch_overlay[hatch_in_mask > 0] = [80, 80, 80]
+    cv2.addWeighted(hatch_overlay, 0.35, img, 0.65, 0, dst=img)
+    
+    # 3. 柔和细灰轮廓边框
+    contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(img, contours, -1, (110, 110, 110), 1, cv2.LINE_AA)
+    
+    return img
+
+
+

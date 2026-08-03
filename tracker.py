@@ -8,7 +8,7 @@ import os
 import time
 from config import config_manager
 from typing import List, Tuple, Optional
-from utils import imshow_adaptive
+from utils import imshow_adaptive, draw_hatched_excluded_region
 
 
 class SimpleKalmanFilter:
@@ -145,6 +145,15 @@ class BlueTracker:
             # 初始化床铺大小的扫掠掩码
             self.bed_mask = np.zeros((self.bed_config.height, self.bed_config.width), dtype=np.uint8)
             self.last_box_brush = None  # 用于帧间插值，防止倍速断点
+            
+            # 初始化排除区域掩码（枕头等）
+            self.excluded_mask = np.zeros((self.bed_config.height, self.bed_config.width), dtype=np.uint8)
+            if hasattr(self.bed_config, 'excluded_polygons') and self.bed_config.excluded_polygons:
+                for poly in self.bed_config.excluded_polygons:
+                    if poly and len(poly) >= 3:
+                        pts = np.array(poly, dtype=np.int32)
+                        cv2.fillPoly(self.excluded_mask, [pts], 255)
+            self.has_excluded = np.any(self.excluded_mask > 0)
         
         print(f"视频信息:")
         print(f"  分辨率: {self.width}x{self.height}")
@@ -167,7 +176,9 @@ class BlueTracker:
             return None
         max_contour = max(contours, key=cv2.contourArea)
         area = cv2.contourArea(max_contour)
-        if area < self.config.min_area:
+        # 远端透视缩小容忍：最小像素面积门槛设为 min(self.config.min_area, 10)
+        min_thresh = min(self.config.min_area, 10)
+        if area < min_thresh:
             return None
         M = cv2.moments(max_contour)
         if M["m00"] == 0:
@@ -233,27 +244,28 @@ class BlueTracker:
         first_frame = None
         
         # 构建床铺区域的 ROI 掩码，用于剔除床铺外的干扰颜色
-        # 外扩一圈识别范围（扩展约 25cm 或比例边距），防止除螨仪靠边/出界清扫时标定纸超出床面多边形而无法识别
+        # 暂时设为严格限制在床铺多边形区域内（margin_cm = 0.0）；后续如需恢复外扩识别，可调回 margin_cm = 25.0
         bed_roi_mask = None
         if self.has_bed_config and self.bed_config.points:
             bed_roi_mask = np.zeros((self.height, self.width), dtype=np.uint8)
             pts = np.array(self.bed_config.points, dtype=np.int32)
             cv2.fillPoly(bed_roi_mask, [pts], 255)
             
-            # 计算外扩边距（优先使用物理 25cm，无物理尺寸时退回为分辨率尺寸的 12%）
-            margin_cm = 25.0
-            if getattr(self, 'pixel_to_cm_x', None) and getattr(self, 'pixel_to_cm_y', None) and self.pixel_to_cm_x > 0 and self.pixel_to_cm_y > 0:
-                margin_px = int(round(margin_cm / min(self.pixel_to_cm_x, self.pixel_to_cm_y)))
-            else:
-                margin_px = int(round(min(self.width, self.height) * 0.12))
+            # 计算外扩边距（暂时设为 0.0cm，即只在床铺区域内识别；恢复外扩识别调回 25.0）
+            margin_cm = 10.0
+            if margin_cm > 0:
+                if getattr(self, 'pixel_to_cm_x', None) and getattr(self, 'pixel_to_cm_y', None) and self.pixel_to_cm_x > 0 and self.pixel_to_cm_y > 0:
+                    margin_px = int(round(margin_cm / min(self.pixel_to_cm_x, self.pixel_to_cm_y)))
+                else:
+                    margin_px = int(round(min(self.width, self.height) * 0.12))
+                
+                margin_px = max(30, min(margin_px, 300))  # 安全范围限制
+                
+                # 膨胀掩码外扩识别范围
+                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (margin_px * 2 + 1, margin_px * 2 + 1))
+                bed_roi_mask = cv2.dilate(bed_roi_mask, kernel)
             
-            margin_px = max(30, min(margin_px, 300))  # 安全范围限制
-            
-            # 膨胀掩码外扩识别范围
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (margin_px * 2 + 1, margin_px * 2 + 1))
-            bed_roi_mask = cv2.dilate(bed_roi_mask, kernel)
-            
-        play_speed = 1
+        play_speed = int(getattr(self.config, 'output_video_speed', 16))
         
         while True:
             # 记录当前帧开始处理的时间点，用于精确控制倍速下的等待延迟
@@ -303,15 +315,16 @@ class BlueTracker:
                 max_size_cm = max(self.coverage_config.real_remover_width_cm or 25.0, 
                                   self.coverage_config.real_remover_height_cm or 22.0)
                 
-                # 真实贴纸距离大约十几厘米，最大限制设为机身最长边的 1.1 倍，绝对不允许拉跨到其他地方
-                if dist_cm > max_size_cm * 1.1:
+                # 真实贴纸距离大约十几厘米。由于远端透视拉伸，物理坐标转换可能导致计算出的距离变大
+                # 限制放宽到 2.0 倍或 50cm，避免顶部透视畸变引发误剔除
+                if dist_cm > max(max_size_cm * 2.0, 50.0):
                     blue_center = None
                     green_center = None
             
             # === EMA平滑处理与防瞬间跳变 ===
-            base_alpha = 0.15
+            base_alpha = 0.45  # 提升响应平滑度（从0.15提升到0.45），消除跟不上机器的滞后感
             alpha = 1.0 - (1.0 - base_alpha) ** play_speed
-            max_jump_px = 60 * play_speed  # 每帧最大允许的物理位移像素
+            max_jump_px = 80 * play_speed  # 每帧最大允许的位移像素
 
             if blue_center:
                 if getattr(self, 'smoothed_blue', None) is None:
@@ -319,8 +332,8 @@ class BlueTracker:
                     self.blue_reject_count = 0
                 else:
                     dist = np.hypot(blue_center[0] - self.smoothed_blue[0], blue_center[1] - self.smoothed_blue[1])
-                    if dist > max_jump_px and getattr(self, 'blue_reject_count', 0) < 15:
-                        # 瞬间跳变，拒绝接受，保持上一帧的位置 (最多容忍连续15帧跳变，防止死锁)
+                    if dist > max_jump_px and getattr(self, 'blue_reject_count', 0) < 10:
+                        # 瞬间跳变，拒绝接受，保持上一帧的位置 (最多容忍连续10帧跳变)
                         self.blue_reject_count = getattr(self, 'blue_reject_count', 0) + 1
                         blue_center = (int(round(self.smoothed_blue[0])), int(round(self.smoothed_blue[1])))
                     else:
@@ -337,7 +350,7 @@ class BlueTracker:
                     self.green_reject_count = 0
                 else:
                     dist = np.hypot(green_center[0] - self.smoothed_green[0], green_center[1] - self.smoothed_green[1])
-                    if dist > max_jump_px and getattr(self, 'green_reject_count', 0) < 15:
+                    if dist > max_jump_px and getattr(self, 'green_reject_count', 0) < 10:
                         self.green_reject_count = getattr(self, 'green_reject_count', 0) + 1
                         green_center = (int(round(self.smoothed_green[0])), int(round(self.smoothed_green[1])))
                     else:
@@ -530,18 +543,45 @@ class BlueTracker:
                     # 蓝框的长度（左右跨度）根据两点之间的实时距离动态调整，若无则使用配置默认值
                     dynamic_w = getattr(self, 'last_dynamic_width_px', float(self.brush_width_px))
                     
-                    # 实时更新覆盖率计算器
-                    if realtime_calc is not None:
-                        realtime_calc.add_point(bx, by, float(box_angle), dynamic_w)
-                    
                     # 4. 在床面掩码上绘制主刷口清洁区域
                     rect_brush = ((float(bx), float(by)), (dynamic_w, float(self.brush_height_px)), float(box_angle))
                     box_brush = cv2.boxPoints(rect_brush)
                     
+                    # 若此前存在短时间丢帧（如 1~30 帧），在上一有效点与当前点之间进行线性插值，填补中途的扫掠空隙
+                    if 0 < no_detection_count <= 30 and self.trajectory:
+                        prev_pt = self.trajectory[-1]
+                        dist_gap = np.hypot(bx - prev_pt.bed_x, by - prev_pt.bed_y)
+                        if dist_gap < 300:
+                            steps = no_detection_count + 1
+                            for i in range(1, steps):
+                                t = i / steps
+                                ix = int(round(prev_pt.bed_x + (bx - prev_pt.bed_x) * t))
+                                iy = int(round(prev_pt.bed_y + (by - prev_pt.bed_y) * t))
+                                iangle = float(prev_pt.bed_angle + (box_angle - prev_pt.bed_angle) * t)
+                                iw = float(prev_pt.width + (dynamic_w - prev_pt.width) * t)
+                                
+                                if realtime_calc is not None:
+                                    realtime_calc.add_point(ix, iy, iangle, iw)
+                                
+                                # 在 bed_mask 上绘制插值刷口
+                                i_rect = ((float(ix), float(iy)), (iw, float(self.brush_height_px)), iangle)
+                                i_box = cv2.boxPoints(i_rect)
+                                if self.last_box_brush is not None:
+                                    i_hull = cv2.convexHull(np.vstack((self.last_box_brush, i_box)))
+                                    i_draw = np.squeeze(i_hull)
+                                else:
+                                    i_draw = i_box
+                                cv2.fillPoly(self.bed_mask, [np.int32(i_draw)], 255)
+                                self.last_box_brush = i_box
+
+                    # 实时更新覆盖率计算器
+                    if realtime_calc is not None:
+                        realtime_calc.add_point(bx, by, float(box_angle), dynamic_w)
+                    
                     if self.last_box_brush is not None and self.trajectory:
                         prev_pt = self.trajectory[-1]
                         dist = np.hypot(bx - prev_pt.bed_x, by - prev_pt.bed_y) if prev_pt.bed_x else 999
-                        if dist < 200:
+                        if dist < 300:
                             hull = cv2.convexHull(np.vstack((self.last_box_brush, box_brush)))
                             draw_poly = np.squeeze(hull)
                         else:
@@ -562,7 +602,7 @@ class BlueTracker:
                 )
                 self.trajectory.append(point)
             else:
-                if self.has_bed_config:
+                if self.has_bed_config and no_detection_count > 30:
                     self.last_box_brush = None
                 no_detection_count += 1
 
@@ -573,6 +613,11 @@ class BlueTracker:
                 # 区分颜色：轨迹为较浅的半透明淡蓝色
                 overlay[warped_back > 0] = [235, 206, 135]  # 淡蓝色 BGR [235, 206, 135]
                 cv2.addWeighted(overlay, 0.35, frame, 0.65, 0, dst=frame)
+
+            # 绘制排除区域柔和灰色阴影（枕头等不参与计算区域）
+            if self.has_bed_config and getattr(self, 'has_excluded', False):
+                excluded_warped_back = cv2.warpPerspective(self.excluded_mask, self.inv_matrix, (self.width, self.height))
+                draw_hatched_excluded_region(frame, excluded_warped_back)
             
             # 绘制标定点 (使用 LINE_AA 开启抗锯齿，边缘更平滑)
             if blue_center:

@@ -6,6 +6,7 @@ import numpy as np
 import cv2
 from typing import List, Tuple, Optional
 from config import config_manager
+from utils import draw_hatched_excluded_region
 
 
 class CoverageCalculator:
@@ -75,6 +76,20 @@ class CoverageCalculator:
         self.min_move_threshold = 2.0  # 触发方向更新的最小位移（像素）
         
         self.last_box = None  # 用于帧间插值，防止倍速播放产生断点
+        
+        # 加载床铺配置以获取排除区域（枕头等）
+        self.bed_config = config_manager.get_bed_area_config()
+        self.excluded_mask = np.zeros((bed_height, bed_width), dtype=np.uint8)
+        
+        if hasattr(self.bed_config, 'excluded_polygons') and self.bed_config.excluded_polygons:
+            for poly in self.bed_config.excluded_polygons:
+                if poly and len(poly) >= 3:
+                    pts = np.array(poly, dtype=np.int32)
+                    cv2.fillPoly(self.excluded_mask, [pts], 255)
+                    
+        self.valid_mask = (self.excluded_mask == 0)
+        self.total_valid_pixels = np.count_nonzero(self.valid_mask)
+        self.excluded_pixels = np.count_nonzero(self.excluded_mask > 0)
         
     def _point_to_grid(self, x: int, y: int) -> Tuple[int, int]:
         """
@@ -246,18 +261,16 @@ class CoverageCalculator:
     
     def calculate_coverage_rate(self) -> float:
         """
-        计算覆盖率
+        计算覆盖率（已自动扣除枕头等排除区域）
         
         Returns:
             覆盖率百分比 (0-100)
         """
-        total_pixels = self.bed_width * self.bed_height
-        covered_pixels = np.count_nonzero(self.heatmap > 0)
-        
-        if total_pixels == 0:
+        if self.total_valid_pixels == 0:
             return 0.0
         
-        return (covered_pixels / total_pixels) * 100
+        covered_pixels = np.count_nonzero((self.heatmap > 0) & self.valid_mask)
+        return (covered_pixels / self.total_valid_pixels) * 100.0
     
     def get_coverage_mask_image(self) -> np.ndarray:
         """
@@ -282,6 +295,10 @@ class CoverageCalculator:
         # 未覆盖区域（红色）
         result[mask_vis == 0] = [0, 0, 255]
         
+        # 标注排除区域阴影
+        if self.excluded_pixels > 0:
+            draw_hatched_excluded_region(result, self.excluded_mask, label="Excluded Area")
+            
         return result
     
     def get_heatmap_image(self, colormap: int = cv2.COLORMAP_JET) -> np.ndarray:
@@ -303,6 +320,10 @@ class CoverageCalculator:
         # 应用颜色映射
         heatmap_color = cv2.applyColorMap(heatmap_norm, colormap)
         
+        # 标注排除区域阴影
+        if self.excluded_pixels > 0:
+            draw_hatched_excluded_region(heatmap_color, self.excluded_mask, label="Excluded Area")
+            
         return heatmap_color
     
     def get_coverage_image(self, bed_image: np.ndarray, 
@@ -323,6 +344,10 @@ class CoverageCalculator:
         # 叠加
         result = cv2.addWeighted(bed_image, 1 - alpha, coverage_vis, alpha, 0)
         
+        # 标注排除区域阴影
+        if self.excluded_pixels > 0:
+            draw_hatched_excluded_region(result, self.excluded_mask, label="Excluded Area")
+            
         # 绘制轨迹
         for i, (x, y) in enumerate(self.trajectory_points):
             cv2.circle(result, (x, y), 2, (255, 255, 0), -1)
@@ -348,13 +373,21 @@ class CoverageCalculator:
             avg_coverage = 0
             max_coverage = 0
         
-        # 计算实际覆盖面积
+        # 计算实际覆盖面积与排除面积
+        total_pixels = self.bed_width * self.bed_height
         if self.use_real_unit:
             total_area_cm2 = self.real_width_cm * self.real_height_cm
-            covered_area_cm2 = total_area_cm2 * coverage_rate / 100
+            excluded_area_cm2 = total_area_cm2 * (self.excluded_pixels / total_pixels) if total_pixels > 0 else 0
+            valid_area_cm2 = total_area_cm2 - excluded_area_cm2
+            covered_area_cm2 = valid_area_cm2 * coverage_rate / 100
+            
             area_info = f"{covered_area_cm2:.0f} cm2 ({covered_area_cm2/10000:.2f} m2)"
+            excluded_info = f"{excluded_area_cm2:.0f} cm2 ({excluded_area_cm2/10000:.2f} m2)"
+            valid_info = f"{valid_area_cm2:.0f} cm2 ({valid_area_cm2/10000:.2f} m2)"
         else:
             area_info = "未设置实际尺寸"
+            excluded_info = f"{self.excluded_pixels} 像素"
+            valid_info = f"{self.total_valid_pixels} 像素"
         
         return {
             'bed_size': f"{self.bed_width}x{self.bed_height}",
@@ -365,6 +398,8 @@ class CoverageCalculator:
             'covered_cells': int(covered_cells),
             'coverage_rate': f"{coverage_rate:.2f}%",
             'covered_area': area_info,
+            'excluded_area': excluded_info,
+            'effective_bed_area': valid_info,
             'trajectory_points': len(self.trajectory_points),
             'avg_coverage_per_cell': f"{avg_coverage:.1f}",
             'max_coverage_per_cell': int(max_coverage),

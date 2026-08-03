@@ -13,7 +13,7 @@ from config import config_manager
 from bed_selector import BedSelector 
 from tracker import BlueTracker
 from coverage import CoverageCalculator
-from utils import imshow_adaptive, create_coverage_curve
+from utils import imshow_adaptive, create_coverage_curve, draw_hatched_excluded_region
 
 
 class MiteCoverageApp:
@@ -33,10 +33,11 @@ class MiteCoverageApp:
         print()
         print("请选择操作:")
         print("  1. 标定床铺区域（选择4个角点）")
-        print("  2. 分析录像（计算覆盖率）")
-        print("  3. 查看结果")
-        print("  4. 配置参数")
-        print("  5. 退出")
+        print("  2. 标注/去除多余区域（如枕头）")
+        print("  3. 分析录像（计算覆盖率）")
+        print("  4. 查看结果")
+        print("  5. 配置参数")
+        print("  6. 退出")
         print()
         
     def calibrate_bed_area(self, video_path=None):
@@ -92,6 +93,10 @@ class MiteCoverageApp:
                 print("\n✓ 床铺区域标定成功！")
                 print(f"  区域尺寸: {selector.warped_image.shape[1]}x{selector.warped_image.shape[0]}")
                 print("  配置已保存到 config.json")
+                if not is_gui:
+                    ask = input("\n床铺标定成功，是否直接就当前视频开始覆盖率追踪分析？(y/n): ").strip().lower()
+                    if ask in ('y', 'yes'):
+                        self.analyze_video(video_path)
             else:
                 print("\n✗ 未保存配置")
                 
@@ -217,6 +222,10 @@ class MiteCoverageApp:
                 heatmap_img[mask_swept] = cv2.addWeighted(
                     first_frame, 1 - alpha_heatmap, heatmap_color, alpha_heatmap, 0
                 )[mask_swept]
+                # 叠加排除区域斜纹阴影（枕头等不参与计算部分）
+                if getattr(tracker, 'has_excluded', False):
+                    excluded_warped_back = cv2.warpPerspective(calculator.excluded_mask, tracker.inv_matrix, (tracker.width, tracker.height))
+                    draw_hatched_excluded_region(heatmap_img, excluded_warped_back, label="Excluded (Not calculated)")
             else:
                 # 兜底：直接输出原版拉平后的热力图
                 heatmap_img = calculator.get_heatmap_image()
@@ -265,7 +274,12 @@ class MiteCoverageApp:
                     overlay = first_frame.copy()
                     overlay[bed_mask_warped_back > 0] = [235, 206, 135]  # 淡蓝色 BGR [235, 206, 135]
                     cv2.addWeighted(overlay, 0.35, coverage_img, 0.65, 0, dst=coverage_img)
-                    
+                
+                # 叠加排除区域斜纹阴影（枕头等不参与计算部分）
+                if getattr(tracker, 'has_excluded', False):
+                    excluded_warped_back = cv2.warpPerspective(calculator.excluded_mask, tracker.inv_matrix, (tracker.width, tracker.height))
+                    draw_hatched_excluded_region(coverage_img, excluded_warped_back, label="Excluded (Not calculated)")
+
                 # 绘制整条机身运动的红色轨迹线
                 if trajectory and len(trajectory) > 1:
                     pts = np.array([[p.tail_x, p.tail_y] for p in trajectory], np.int32)
@@ -280,6 +294,8 @@ class MiteCoverageApp:
                     overlay = coverage_img.copy()
                     overlay[bed_mask > 0] = [235, 206, 135]
                     cv2.addWeighted(overlay, 0.35, coverage_img, 0.65, 0, dst=coverage_img)
+                if np.any(calculator.excluded_mask > 0):
+                    draw_hatched_excluded_region(coverage_img, calculator.excluded_mask, label="Excluded (Not calculated)")
                 
                 # 在白底画布上无法直接画视频视角的红线，除非红线坐标是基于床铺的
                 # 但根据现有逻辑，红线坐标是视频像素坐标 (tail_x, tail_y)，所以只在有 first_frame 时绘制
@@ -335,10 +351,14 @@ class MiteCoverageApp:
             print(f"  覆盖率报告已保存: {self.output_dir}/{report_filename}")
             print(f"  主刷口大小: {calculator.brush_width_px}x{calculator.brush_height_px} 像素 ({calculator.config.real_brush_width_cm}x{calculator.config.real_brush_height_cm} 厘米)")
             
-            # 显示实际覆盖面积
+            # 显示实际覆盖面积与扣除面积
             if calculator.use_real_unit:
                 print(f"  床铺实际尺寸: {stats['real_bed_size']}")
+                print(f"  多余排除面积(枕头等): {stats.get('excluded_area', '0 cm2')}")
+                print(f"  有效计算面积: {stats.get('effective_bed_area', '0 cm2')}")
                 print(f"  实际覆盖面积: {stats['covered_area']}")
+            else:
+                print(f"  多余排除像素(枕头等): {stats.get('excluded_area', '0 px')}")
             
             # 6. 分析结束后，显示综合结果图
             if not is_gui:
@@ -461,7 +481,7 @@ class MiteCoverageApp:
             print(f"  8. 最小检测区域 (像素): {tracker_config.min_area}")
             print(f"  9. 覆盖网格大小 (像素): {coverage_config.grid_size}")
             print(f"  10. 贴纸高度视差补偿 (cm): {getattr(tracker_config, 'parallax_height_cm', 0.0)} cm")
-            print(f"  11. 输出视频播放倍速: {getattr(tracker_config, 'output_video_speed', 1.0)}")
+            print(f"  11. 输出视频播放倍速: {getattr(tracker_config, 'output_video_speed', 16.0)}")
             print(f"  12. 返回主菜单")
             print()
             
@@ -581,7 +601,7 @@ class MiteCoverageApp:
                 input("按回车键继续...")
             elif choice == '11':
                 try:
-                    val = float(input(f"输出视频播放倍速 (当前 {getattr(tracker_config, 'output_video_speed', 1.0)}): ").strip() or str(getattr(tracker_config, 'output_video_speed', 1.0)))
+                    val = float(input(f"输出视频播放倍速 (当前 {getattr(tracker_config, 'output_video_speed', 16.0)}): ").strip() or str(getattr(tracker_config, 'output_video_speed', 16.0)))
                     if val <= 0:
                         print("✗ 倍速必须大于 0！")
                     else:
@@ -597,23 +617,40 @@ class MiteCoverageApp:
                 print("✗ 无效选择！")
                 input("按回车键继续...")
     
+    def exclude_bed_area(self):
+        """标注/去除多余区域（如枕头）"""
+        print("\n=== 标注床铺排除区域 ===")
+        try:
+            from excluded_selector import ExcludedAreaSelector
+            selector = ExcludedAreaSelector()
+            success = selector.run()
+            if success:
+                print("\n✓ 排除区域配置已更新！分析时将自动扣除该部分面积。")
+            else:
+                print("\n未更改配置")
+        except Exception as e:
+            print(f"\n错误: {e}")
+        input("\n按回车键继续...")
+
     def run(self):
         """运行应用"""
         while True:
             self.show_menu()
             
             try:
-                choice = input("请输入选项 (1-5): ").strip()
+                choice = input("请输入选项 (1-6): ").strip()
                 
                 if choice == '1':
                     self.calibrate_bed_area()
                 elif choice == '2':
-                    self.analyze_video()
+                    self.exclude_bed_area()
                 elif choice == '3':
-                    self.view_results()
+                    self.analyze_video()
                 elif choice == '4':
-                    self.configure_parameters()
+                    self.view_results()
                 elif choice == '5':
+                    self.configure_parameters()
+                elif choice == '6':
                     print("\n感谢使用！")
                     sys.exit(0)
                 else:
