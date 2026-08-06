@@ -312,16 +312,13 @@ class MiteCoverageApp:
             
             text_coverage = f"Coverage: {coverage_rate}"
             text_duration = f"Duration: {duration_sec:.1f}s"
-            text_time = f"Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             
             # 绘制描边
             cv2.putText(coverage_img, text_coverage, (30, 60), font, font_scale, (0, 0, 0), font_thickness + 2, cv2.LINE_AA)
             cv2.putText(coverage_img, text_duration, (30, 110), font, font_scale, (0, 0, 0), font_thickness + 2, cv2.LINE_AA)
-            cv2.putText(coverage_img, text_time, (30, 160), font, font_scale, (0, 0, 0), font_thickness + 2, cv2.LINE_AA)
             # 绘制内部黄色文字
             cv2.putText(coverage_img, text_coverage, (30, 60), font, font_scale, (0, 255, 255), font_thickness, cv2.LINE_AA)
             cv2.putText(coverage_img, text_duration, (30, 110), font, font_scale, (0, 255, 255), font_thickness, cv2.LINE_AA)
-            cv2.putText(coverage_img, text_time, (30, 160), font, font_scale, (0, 255, 255), font_thickness, cv2.LINE_AA)
             
             # 4. 拼接床铺扫掠图与时间变化曲线图
             curve_path = os.path.join(self.output_dir, temp_curve_name)
