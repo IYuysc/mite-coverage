@@ -38,3 +38,4 @@ Thumbs.db
 *.patch
 *.log
 .idea/
+venv32/
