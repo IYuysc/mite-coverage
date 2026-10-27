@@ -18,12 +18,12 @@ class TrackerConfig:
     blue_upper_s: int = 255
     blue_upper_v: int = 255
     
-    green_lower_h: int = 30
-    green_lower_s: int = 35
-    green_lower_v: int = 35
-    green_upper_h: int = 55
+    green_lower_h: int = 40
+    green_lower_s: int = 125
+    green_lower_v: int = 60
+    green_upper_h: int = 50
     green_upper_s: int = 255
-    green_upper_v: int = 255
+    green_upper_v: int = 150
     
     min_area: int = 50
     morph_kernel_size: int = 5

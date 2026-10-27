@@ -482,20 +482,23 @@ class BlueTracker:
                             ux = -dy_bed / D_bed
                             uy = dx_bed / D_bed
                             
-                            # 用户要求蓝色主刷口比贴纸距离稍微宽一点点（乘以 1.15 倍）
-                            self.last_dynamic_width_px = float(D_bed) * 1.15
+                            # 用户要求：主刷长度比蓝绿标定点两侧各宽 1cm（左右两侧各延伸 1cm，总共增加 2cm）
+                            ex = dx_bed / D_bed
+                            ey = dy_bed / D_bed
+                            cm_per_px = np.hypot(ex * self.pixel_to_cm_x, ey * self.pixel_to_cm_y)
+                            extra_width_px = 2.0 / max(cm_per_px, 1e-4) if cm_per_px > 0 else 0.0
+                            self.last_dynamic_width_px = float(D_bed) + extra_width_px
                             
-                            # 放弃思路2的动态补偿，仅保留一个固定的基础物理前伸量
-                            # 根据机身真实大小，设定恒定的前伸量 4.0 cm
-                            offset_cm = 4.0
+                            # 用户要求：主刷就在蓝绿色标定点正下方，不需要往后/往前推
+                            offset_cm = 0.0
                             
                             # 机身中心 (直接由两点中点确定)
                             rx = 0.5 * (bx_b + gx_b)
                             ry = 0.5 * (by_b + gy_b)
                             
-                            # 刷头中心 (机身中心沿前行朝向推 offset_cm 对应的像素)
-                            bx = rx + (offset_cm / self.pixel_to_cm_x) * ux
-                            by = ry + (offset_cm / self.pixel_to_cm_y) * uy
+                            # 刷头中心 (直接位于蓝绿标定点正下方中点)
+                            bx = rx
+                            by = ry
                             
                             # 尾部红点 (沿相反方向推，也要往前一点，所以缩短距离到机身长度的30%)
                             tail_cm = (self.coverage_config.real_remover_height_cm or 27.0) * 0.3
